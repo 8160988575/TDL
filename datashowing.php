@@ -2376,124 +2376,6 @@ body {
 
 
 /* =========================================================
-   MAIN GROUP TABLE - FIXED 100% GRID
-   ========================================================= */
-
-#groupsTable {
-    width: 100% !important;
-    min-width: 0 !important;
-    max-width: 100% !important;
-    table-layout: fixed !important;
-    border-collapse: collapse;
-}
-
-.table-wrap {
-    width: 100%;
-    max-width: 100%;
-    overflow-x: hidden !important;
-    overflow-y: visible;
-}
-
-#groupsTable th:nth-child(1),
-#groupsTable td:nth-child(1) { width: 5%; }
-
-#groupsTable th:nth-child(2),
-#groupsTable td:nth-child(2) { width: 7%; }
-
-#groupsTable th:nth-child(3),
-#groupsTable td:nth-child(3) { width: 10%; }
-
-#groupsTable th:nth-child(4),
-#groupsTable td:nth-child(4) { width: 10%; }
-
-#groupsTable th:nth-child(5),
-#groupsTable td:nth-child(5) { width: 26.5%; }
-
-#groupsTable th:nth-child(6),
-#groupsTable td:nth-child(6) { width: 26.5%; }
-
-#groupsTable th:nth-child(7),
-#groupsTable td:nth-child(7) { width: 10%; }
-
-#groupsTable th:nth-child(8),
-#groupsTable td:nth-child(8) { width: 5%; }
-
-#groupsTable th,
-#groupsTable td {
-    min-width: 0 !important;
-    max-width: 0;
-    overflow-wrap: anywhere;
-    word-break: break-word;
-}
-
-#groupsTable th {
-    white-space: normal;
-}
-
-#groupsTable td {
-    overflow: hidden;
-}
-
-#groupsTable .line-list {
-    width: 100%;
-    min-width: 0;
-}
-
-#groupsTable .line-item {
-    width: 100%;
-    min-width: 0;
-    overflow-wrap: anywhere;
-    word-break: break-word;
-}
-
-#groupsTable .person-line strong,
-#groupsTable .person-numbers {
-    display: block;
-    overflow-wrap: anywhere;
-    word-break: break-word;
-}
-
-#groupsTable .person-numbers {
-    margin-top: 3px;
-    font-size: 11px;
-    line-height: 1.3;
-    font-weight: 600;
-    color: #697386;
-}
-
-#groupsTable .line-item.main .person-numbers {
-    color: #7a622d;
-}
-
-/* Keep action controls inside the 5% Actions column. */
-#groupsTable td:nth-child(8) {
-    padding: 7px 4px !important;
-}
-
-#groupsTable .actions {
-    width: 100%;
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-}
-
-#groupsTable .actions form,
-#groupsTable .actions .btn {
-    width: 100%;
-    max-width: 100%;
-    min-width: 0;
-}
-
-#groupsTable .actions .btn {
-    padding: 7px 3px;
-    font-size: 9px;
-    line-height: 1.15;
-    white-space: normal;
-    overflow-wrap: anywhere;
-    word-break: break-word;
-}
-
-/* =========================================================
    TABLE
    ========================================================= */
 
@@ -2516,6 +2398,35 @@ table {
     border-collapse:
         collapse;
 
+}
+
+/* MAIN GROUP GRID ONLY - fixed to viewport, no horizontal scrolling */
+#groupsTable {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    table-layout: fixed !important;
+}
+
+#groupsTable th,
+#groupsTable td {
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+#groupsTable th:nth-child(1), #groupsTable td:nth-child(1) { width: 5% !important; }
+#groupsTable th:nth-child(2), #groupsTable td:nth-child(2) { width: 7% !important; }
+#groupsTable th:nth-child(3), #groupsTable td:nth-child(3) { width: 10% !important; }
+#groupsTable th:nth-child(4), #groupsTable td:nth-child(4) { width: 10% !important; }
+#groupsTable th:nth-child(5), #groupsTable td:nth-child(5) { width: 26.5% !important; }
+#groupsTable th:nth-child(6), #groupsTable td:nth-child(6) { width: 26.5% !important; }
+#groupsTable th:nth-child(7), #groupsTable td:nth-child(7) { width: 10% !important; }
+#groupsTable th:nth-child(8), #groupsTable td:nth-child(8) { width: 5% !important; }
+
+.table-wrap {
+    overflow-x: hidden !important;
+    max-width: 100%;
 }
 
 
@@ -4065,6 +3976,16 @@ tbody tr:hover {
     <div class="table-wrap">
 
         <table id="groupsTable">
+            <colgroup>
+                <col style="width:5%">
+                <col style="width:7%">
+                <col style="width:10%">
+                <col style="width:10%">
+                <col style="width:26.5%">
+                <col style="width:26.5%">
+                <col style="width:10%">
+                <col style="width:5%">
+            </colgroup>
 
             <thead>
 
@@ -4270,36 +4191,20 @@ $searchText =
     as $person
 ): ?>
 
-                            <div class="line-item person-line">
-
-                                <strong><?= e(
-                                    $person['name']
-                                ) ?></strong>
-
-<?php
-$personNumbers = [];
-
-foreach (
-    [
-        $person['number1'] ?? '',
-        $person['number2'] ?? '',
-        $person['number3'] ?? ''
-    ] as $personNumber
-) {
-    $personNumber = trim((string)$personNumber);
-
-    if ($personNumber !== '') {
-        $personNumbers[] = $personNumber;
-    }
-}
-?>
-
-<?php if (!empty($personNumbers)): ?>
-                                <span class="person-numbers">
-                                    <?= e(implode(' • ', $personNumbers)) ?>
-                                </span>
-<?php endif; ?>
-
+                            <div class="line-item">
+                                <strong><?= e($person['name']) ?></strong>
+                                <?php
+                                $personNumbers = array_values(array_filter([
+                                    trim((string)($person['number1'] ?? '')),
+                                    trim((string)($person['number2'] ?? '')),
+                                    trim((string)($person['number3'] ?? ''))
+                                ], static function ($v) { return $v !== ''; }));
+                                ?>
+                                <?php if (!empty($personNumbers)): ?>
+                                    <div style="margin-top:3px;font-size:11px;color:#667085;line-height:1.35;">
+                                        <?= e(implode(' • ', $personNumbers)) ?>
+                                    </div>
+                                <?php endif; ?>
                             </div>
 
 <?php endforeach; ?>
@@ -4326,45 +4231,37 @@ foreach (
 ): ?>
 
 <?php foreach (
-    $group['persons'] as $mainPerson
+    $group[
+        'main_persons'
+    ] as $mainPerson
 ): ?>
 
-<?php
-if (
-    trim((string)($mainPerson['main'] ?? '')) !== 'main'
-) {
-    continue;
-}
-
-$mainNumbers = [];
-
-foreach (
-    [
-        $mainPerson['number1'] ?? '',
-        $mainPerson['number2'] ?? '',
-        $mainPerson['number3'] ?? ''
-    ] as $mainNumber
-) {
-    $mainNumber = trim((string)$mainNumber);
-
-    if ($mainNumber !== '') {
-        $mainNumbers[] = $mainNumber;
-    }
-}
-?>
-
-                            <div class="line-item main person-line">
-
-                                <strong><?= e(
-                                    $mainPerson['name'] ?? ''
-                                ) ?></strong>
-
-<?php if (!empty($mainNumbers)): ?>
-                                <span class="person-numbers">
-                                    <?= e(implode(' • ', $mainNumbers)) ?>
-                                </span>
-<?php endif; ?>
-
+                            <?php
+                            $mainMatch = null;
+                            foreach ($group['persons'] as $person) {
+                                if (strcasecmp(trim((string)($person['name'] ?? '')), trim((string)$mainPerson)) === 0
+                                    && trim((string)($person['main'] ?? '')) === 'main') {
+                                    $mainMatch = $person;
+                                    break;
+                                }
+                            }
+                            ?>
+                            <div class="line-item main">
+                                <strong><?= e($mainPerson) ?></strong>
+                                <?php if ($mainMatch): ?>
+                                    <?php
+                                    $mainNumbers = array_values(array_filter([
+                                        trim((string)($mainMatch['number1'] ?? '')),
+                                        trim((string)($mainMatch['number2'] ?? '')),
+                                        trim((string)($mainMatch['number3'] ?? ''))
+                                    ], static function ($v) { return $v !== ''; }));
+                                    ?>
+                                    <?php if (!empty($mainNumbers)): ?>
+                                        <div style="margin-top:3px;font-size:11px;color:#667085;line-height:1.35;">
+                                            <?= e(implode(' • ', $mainNumbers)) ?>
+                                        </div>
+                                    <?php endif; ?>
+                                <?php endif; ?>
                             </div>
 
 <?php endforeach; ?>
