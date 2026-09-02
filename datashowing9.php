@@ -2422,28 +2422,7 @@ table {
 #groupsTable th:nth-child(5), #groupsTable td:nth-child(5) { width: 26.5% !important; }
 #groupsTable th:nth-child(6), #groupsTable td:nth-child(6) { width: 26.5% !important; }
 #groupsTable th:nth-child(7), #groupsTable td:nth-child(7) { width: 10% !important; }
-#groupsTable th:nth-child(8), #groupsTable td:nth-child(8) {
-    width: 5% !important;
-    padding-left: 6px !important;
-    padding-right: 6px !important;
-}
-
-#groupsTable .actions {
-    width: 100%;
-    min-width: 0;
-    gap: 4px;
-    box-sizing: border-box;
-}
-
-#groupsTable .actions .btn {
-    max-width: 100%;
-    min-width: 0;
-    padding-left: 5px;
-    padding-right: 5px;
-    white-space: normal;
-    overflow-wrap: anywhere;
-    box-sizing: border-box;
-}
+#groupsTable th:nth-child(8), #groupsTable td:nth-child(8) { width: 5% !important; }
 
 .table-wrap {
     overflow-x: hidden !important;
