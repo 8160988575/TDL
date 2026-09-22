@@ -66,7 +66,11 @@ $area_options = [
     'Narol',
     'Vatva',
     'Vastral',
-    'Odhav'
+    'Odhav',
+    'CT',
+    'Thaltej',
+    'Kalol',
+    'Charodi'
 
 ];
 

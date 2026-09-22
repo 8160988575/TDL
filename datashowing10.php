@@ -40,13 +40,42 @@ if (!in_array($star_filter, ['', 'starred', 'not_starred'], true)) {
 
 
 
-$area_options = [
-    'naroda',
-    'zundal',
-    'sg highway',
-    'gift city',
-    'gandhinagar'
-];
+/* Fetch every unique individual area currently stored in data.area.
+ * Example: "Naroda, Gandhinagar" becomes two separate filter choices. */
+$area_options = [];
+
+$areaResult = mysqli_query(
+    $con,
+    "SELECT area FROM data
+     WHERE TRIM(COALESCE(area, '')) <> ''
+     ORDER BY id ASC"
+);
+
+if ($areaResult) {
+    while ($areaRow = mysqli_fetch_assoc($areaResult)) {
+        $parts = preg_split('/\s*,\s*/', (string)($areaRow['area'] ?? ''));
+
+        foreach ($parts as $part) {
+            $part = trim($part);
+            if ($part === '') continue;
+
+            $exists = false;
+            foreach ($area_options as $existingArea) {
+                if (strcasecmp($existingArea, $part) === 0) {
+                    $exists = true;
+                    break;
+                }
+            }
+
+            if (!$exists) {
+                $area_options[] = $part;
+            }
+        }
+    }
+}
+
+natcasesort($area_options);
+$area_options = array_values($area_options);
 
 
 /* =========================================================
@@ -661,13 +690,22 @@ if (
         $areas = [];
     }
 
-    $areas =
-        array_values(
-            array_intersect(
-                $areas,
-                $area_options
-            )
-        );
+    /* Keep submitted area values matched case-insensitively
+       against the individual area options. */
+    $validAreaMap = [];
+    foreach ($area_options as $validArea) {
+        $validAreaMap[strtolower(trim((string)$validArea))] = $validArea;
+    }
+
+    $cleanAreas = [];
+    foreach ($areas as $submittedArea) {
+        $key = strtolower(trim((string)$submittedArea));
+        if ($key !== '' && isset($validAreaMap[$key])) {
+            $cleanAreas[] = $validAreaMap[$key];
+        }
+    }
+
+    $areas = array_values(array_unique($cleanAreas));
 
     if ($grp_id <= 0) {
 
@@ -2285,6 +2323,15 @@ body {
 
 }
 
+/* AREA FILTER - MULTI SELECT ONLY */
+.area-filter {
+    min-height: 45px;
+    height: auto;
+    max-height: 120px;
+    overflow-y: auto;
+}
+
+
 
 /* =========================================================
    CARD
@@ -3707,6 +3754,43 @@ tbody tr:hover {
     .filter-search-btn,.area-filter{flex:1}
 }
 
+/* AREA SELECT BUTTON + MULTI-SELECT DROPDOWN */
+.area-select-wrap{position:relative;min-width:190px}
+.area-select-button{
+    width:100%;height:45px;padding:0 14px;border:1px solid var(--border);
+    border-radius:11px;background:#fff;color:var(--text);font-weight:800;
+    font-size:12px;cursor:pointer;display:flex;align-items:center;
+    justify-content:space-between;gap:12px;outline:none;transition:.18s;
+}
+.area-select-button:hover,.area-select-wrap.open .area-select-button{
+    border-color:var(--gold);box-shadow:0 0 0 3px rgba(232,182,91,.14)
+}
+.area-select-arrow{font-size:15px;line-height:1;transition:.18s}
+.area-select-wrap.open .area-select-arrow{transform:rotate(180deg)}
+.area-select-menu{
+    display:none;position:absolute;z-index:9999;top:calc(100% + 7px);left:0;
+    width:100%;min-width:230px;background:#fff;border:1px solid #dfe4eb;
+    border-radius:12px;box-shadow:0 14px 35px rgba(16,28,50,.18);overflow:hidden;
+}
+.area-select-wrap.open .area-select-menu{display:block}
+.area-select-menu-top{
+    display:flex;align-items:center;justify-content:space-between;gap:10px;
+    padding:10px 12px;border-bottom:1px solid #edf0f4;background:#fafbfc;
+}
+.area-select-menu-top strong{font-size:12px;color:var(--navy)}
+.area-select-menu-top button{
+    border:0;background:transparent;color:#a47728;font-weight:800;font-size:11px;
+    cursor:pointer;padding:3px 5px
+}
+.area-select-options{max-height:240px;overflow-y:auto;padding:6px}
+.area-option{
+    display:flex;align-items:center;gap:9px;padding:9px 8px;border-radius:8px;
+    cursor:pointer;font-size:12px;color:var(--text);font-weight:600;
+}
+.area-option:hover{background:#f5f7fa}
+.area-option input{width:16px;height:16px;margin:0;accent-color:#b78b3f;cursor:pointer}
+@media(max-width:800px){.area-select-wrap{width:100%;min-width:0}.area-select-menu{width:100%}}
+
 
 /* SEARCH HIGHLIGHT ONLY */
 #groupsTable .search-match{
@@ -3942,30 +4026,38 @@ tbody tr:hover {
         </option>
     </select>
 
-    <select
-        class="area-filter"
-        id="areaFilter"
-    >
+    <div class="area-select-wrap" id="areaSelectWrap">
+        <button
+            type="button"
+            class="area-select-button"
+            id="areaSelectButton"
+            onclick="tdlToggleAreaMenu(event)"
+        >
+            <span>📍 Select Area</span>
+            <span class="area-select-arrow">▾</span>
+        </button>
 
-        <option value="">
-            All Areas
-        </option>
+        <div class="area-select-menu" id="areaSelectMenu">
+            <div class="area-select-menu-top">
+                <strong>Select Areas</strong>
+                <button type="button" onclick="tdlClearAreaFilter(event)">All Areas</button>
+            </div>
 
-        <?php foreach (
-            $area_options as $area
-        ): ?>
-
-            <option
-                value="<?= e($area) ?>"
-            >
-                <?= e(
-                    ucwords($area)
-                ) ?>
-            </option>
-
-        <?php endforeach; ?>
-
-    </select>
+            <div class="area-select-options">
+                <?php foreach ($area_options as $area): ?>
+                    <label class="area-option">
+                        <input
+                            type="checkbox"
+                            name="area_filter[]"
+                            value="<?= e($area) ?>"
+                            onchange="tdlAreaSelectionChanged()"
+                        >
+                        <span><?= e(ucwords($area)) ?></span>
+                    </label>
+                <?php endforeach; ?>
+            </div>
+        </div>
+    </div>
 
 </div>
 </form>
@@ -4537,13 +4629,17 @@ if (
 
 <?php
 
-$currentAreas =
-    preg_split(
-        '/\s*,\s*/',
-        strtolower(
-            $group['area']
-        )
-    );
+$currentAreas = preg_split(
+    '/\s*,\s*/',
+    (string)($group['area'] ?? '')
+);
+
+$currentAreasNormalized = array_map(
+    static function ($value) {
+        return strtolower(trim((string)$value));
+    },
+    $currentAreas ?: []
+);
 
 ?>
 
@@ -4562,8 +4658,8 @@ $currentAreas =
                                                         name="areas[]"
                                                         value="<?= e($area) ?>"
                                                         <?= in_array(
-                                                            $area,
-                                                            $currentAreas,
+                                                            strtolower(trim((string)$area)),
+                                                            $currentAreasNormalized,
                                                             true
                                                         )
                                                             ? 'checked'
@@ -4732,9 +4828,7 @@ foreach (
                                                     data-person-id="<?= (int)$person['id'] ?>"
                                                 >
 
-                                                    <form
-                                                        method="POST"
-                                                    >
+                                                    
 
                                                         <td>
                                                             <?= $personNo ?>
@@ -4742,7 +4836,7 @@ foreach (
 
                                                         <td>
 
-                                                            <input
+                                                            <input form="personEditForm_95148"
                                                                 class="person-input person-name"
                                                                 type="text"
                                                                 name="name" data-field="name"
@@ -4759,7 +4853,7 @@ foreach (
 
                                                         <td>
 
-                                                            <input
+                                                            <input form="personEditForm_95148"
                                                                 class="person-input"
                                                                 type="text"
                                                                 name="number1" data-field="number1"
@@ -4775,7 +4869,7 @@ foreach (
 
                                                         <td>
 
-                                                            <input
+                                                            <input form="personEditForm_95148"
                                                                 class="person-input"
                                                                 type="text"
                                                                 name="number2" data-field="number2"
@@ -4791,7 +4885,7 @@ foreach (
 
                                                         <td>
 
-                                                            <input
+                                                            <input form="personEditForm_95148"
                                                                 class="person-input"
                                                                 type="text"
                                                                 name="number3" data-field="number3"
@@ -4807,7 +4901,7 @@ foreach (
 
                                                         <td>
 
-                                                            <input
+                                                            <input form="personEditForm_95148"
                                                                 class="person-input"
                                                                 type="text"
                                                                 name="relation1" data-field="relation1"
@@ -4823,7 +4917,7 @@ foreach (
 
                                                         <td>
 
-                                                            <input
+                                                            <input form="personEditForm_95148"
                                                                 class="person-input"
                                                                 type="text"
                                                                 name="relation2" data-field="relation2"
@@ -4839,7 +4933,7 @@ foreach (
 
                                                         <td>
 
-                                                            <input
+                                                            <input form="personEditForm_95148"
                                                                 class="person-input"
                                                                 type="text"
                                                                 value="<?= e(
@@ -4855,7 +4949,7 @@ foreach (
 
                                                         <td>
 
-                                                            <select
+                                                            <select form="personEditForm_95148"
                                                                 name="main" data-field="main"
                                                                 class="main-select"
                                                             >
@@ -4895,20 +4989,22 @@ foreach (
 
                                                         <td>
 
-                                                            <input
+                                                            <form id="personEditForm_95148" method="POST"></form>
+
+<input form="personEditForm_95148"
                                                                 type="hidden"
                                                                 name="id"
                                                                 value="<?= (int)$person['id'] ?>"
                                                             >
 
-                                                            <input
+                                                            <input form="personEditForm_95148"
                                                                 type="hidden"
                                                                 name="grp_id"
                                                                 value="<?= $gid ?>"
                                                             >
 
 
-                                                            <button
+                                                            <button form="personEditForm_95148"
                                                                 type="submit"
                                                                 name="update_person"
                                                                 value="1"
@@ -4918,7 +5014,7 @@ foreach (
                                                             </button>
 
 
-                                                            <button
+                                                            <button form="personEditForm_95148"
                                                                 type="submit"
                                                                 name="delete_person"
                                                                 value="1"
@@ -4930,7 +5026,7 @@ foreach (
 
                                                         </td>
 
-                                                    </form>
+                                                    
 
                                                 </tr>
 
@@ -5371,25 +5467,67 @@ function tdlApplyHighlights(query) {
     });
 }
 
+function tdlGetSelectedAreas() {
+    var checks = document.querySelectorAll('#areaSelectMenu input[name="area_filter[]"]:checked');
+    return Array.from(checks).map(function(check) {
+        return tdlNormalize(check.value || '');
+    }).filter(Boolean);
+}
+
+function tdlUpdateAreaButton() {
+    var button = document.getElementById('areaSelectButton');
+    if (!button) return;
+
+    var selected = tdlGetSelectedAreas();
+    var label = selected.length
+        ? (selected.length + ' Area' + (selected.length > 1 ? 's' : '') + ' Selected')
+        : '📍 Select Area';
+
+    button.querySelector('span:first-child').textContent = label;
+}
+
+function tdlToggleAreaMenu(event) {
+    if (event) event.stopPropagation();
+    var wrap = document.getElementById('areaSelectWrap');
+    if (wrap) wrap.classList.toggle('open');
+}
+
+function tdlClearAreaFilter(event) {
+    if (event) event.stopPropagation();
+
+    document.querySelectorAll('#areaSelectMenu input[name="area_filter[]"]').forEach(function(check) {
+        check.checked = false;
+    });
+
+    tdlUpdateAreaButton();
+    tdlLiveSearch();
+}
+
+function tdlAreaSelectionChanged() {
+    tdlUpdateAreaButton();
+    tdlLiveSearch();
+}
+
 function tdlLiveSearch() {
     var input = document.getElementById('groupSearch');
-    var area  = document.getElementById('areaFilter');
-
     var query = input ? input.value : '';
-    var selectedArea = area ? tdlNormalize(area.value) : '';
+    var selectedAreas = tdlGetSelectedAreas();
 
     var visible = 0;
 
     tdlGetRows().forEach(function(row) {
         var searchOK = tdlRowMatches(row, query);
 
-        var rowArea = tdlNormalize(
-            row.getAttribute('data-area') || ''
-        );
+        var rowArea = row.getAttribute('data-area') || '';
+        var rowAreas = rowArea.split(',').map(function(oneArea) {
+            return tdlNormalize(oneArea).trim();
+        }).filter(Boolean);
 
         var areaOK =
-            !selectedArea ||
-            rowArea.indexOf(selectedArea) !== -1;
+            selectedAreas.length === 0 ||
+            selectedAreas.some(function(selectedArea) {
+                return rowAreas.indexOf(selectedArea) !== -1;
+            });
 
         var show = searchOK && areaOK;
 
@@ -5424,11 +5562,14 @@ function tdlLiveSearch() {
 
 /* Area filter should also update immediately. */
 document.addEventListener('DOMContentLoaded', function() {
-    var area = document.getElementById('areaFilter');
+    tdlUpdateAreaButton();
 
-    if (area) {
-        area.addEventListener('change', tdlLiveSearch);
-    }
+    document.addEventListener('click', function(event) {
+        var wrap = document.getElementById('areaSelectWrap');
+        if (wrap && !wrap.contains(event.target)) {
+            wrap.classList.remove('open');
+        }
+    });
 
     /* If browser restored a previous search value, apply it once. */
     tdlLiveSearch();
