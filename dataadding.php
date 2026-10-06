@@ -70,7 +70,9 @@ $area_options = [
     'CT',
     'Thaltej',
     'Kalol',
-    'Charodi'
+    'Charodi',
+    'Surat',
+    'South Bopal'
 
 ];
 

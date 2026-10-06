@@ -1,0 +1,17 @@
+here check_final2 working properly
+
+just give it data and it will automatically calls the API
+
+
+
+STEPS:
+
+pela aapda ne common data mathi entityID made and ane aapde 
+
+https://gujrera.gujarat.gov.in/project_reg/public/alldatabyprojectid/13705
+
+aama last ma nakhie atle aapda ne Promterid made
+
+https://gujrera.gujarat.gov.in/user_reg/promoter/promoter14447
+
+ane aapde ama last ma nakhie atle aapda na bathi j details madi jae

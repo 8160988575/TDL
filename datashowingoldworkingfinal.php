@@ -2578,6 +2578,25 @@ tbody tr:hover {
 
 }
 
+.group-sort-header {
+    cursor: pointer;
+    user-select: none;
+}
+
+.group-sort-header:hover {
+    background: var(--navy-3);
+}
+
+.group-sort-header > span:first-child {
+    display: inline-block;
+    margin-right: 4px;
+}
+
+.group-sort-icon {
+    font-size: 12px;
+    opacity: .85;
+}
+
 
 .company {
 
@@ -4104,8 +4123,9 @@ tbody tr:hover {
 
                 <tr>
 
-                    <th>
-                        Group
+                    <th class="group-sort-header" id="groupSortHeader" title="Click to sort Group high to low / low to high">
+                        <span>Group</span>
+                        <span id="groupSortIcon" class="group-sort-icon">↕</span>
                     </th>
 
                     <th>
@@ -4206,6 +4226,7 @@ $searchText =
 
                 <tr
                     class="group-row"
+                    data-group-id="<?= $gid ?>"
                     data-search="<?= e($searchText) ?>"
                     data-area="<?= e(
                         strtolower(
@@ -4318,7 +4339,7 @@ $searchText =
                                         <?php foreach ($personNumbers as $personNumber): ?>
                                             <?php $waNumber = preg_replace('/[^0-9]/', '', (string)$personNumber); ?>
                                             <?php if ($waNumber !== ''): ?>
-                                                <a href="https://wa.me/+91<?= e($waNumber) ?>" target="_blank" rel="noopener noreferrer" style="color:#159957;text-decoration:none;font-weight:700;display:inline-block;margin-right:7px;" title="Open WhatsApp"><?= e($personNumber) ?></a>
+                                                <a href="https://wa.me/<?= e($waNumber) ?>" target="_blank" rel="noopener noreferrer" style="color:#159957;text-decoration:none;font-weight:700;display:inline-block;margin-right:7px;" title="Open WhatsApp"><?= e($personNumber) ?></a>
                                             <?php else: ?>
                                                 <span style="display:inline-block;margin-right:7px;"><?= e($personNumber) ?></span>
                                             <?php endif; ?>
@@ -4381,7 +4402,7 @@ $searchText =
                                             <?php foreach ($mainNumbers as $mainNumber): ?>
                                                 <?php $mainWaNumber = preg_replace('/[^0-9]/', '', (string)$mainNumber); ?>
                                                 <?php if ($mainWaNumber !== ''): ?>
-                                                    <a href="https://wa.me/+91<?= e($mainWaNumber) ?>" target="_blank" rel="noopener noreferrer" style="color:#159957;text-decoration:none;font-weight:700;display:inline-block;margin-right:7px;" title="Open WhatsApp"><?= e($mainNumber) ?></a>
+                                                    <a href="https://wa.me/<?= e($mainWaNumber) ?>" target="_blank" rel="noopener noreferrer" style="color:#159957;text-decoration:none;font-weight:700;display:inline-block;margin-right:7px;" title="Open WhatsApp"><?= e($mainNumber) ?></a>
                                                 <?php else: ?>
                                                     <span style="display:inline-block;margin-right:7px;"><?= e($mainNumber) ?></span>
                                                 <?php endif; ?>
@@ -5568,8 +5589,88 @@ function tdlLiveSearch() {
     tdlApplyHighlights(query);
 }
 
+/* =========================================================
+   GROUP COLUMN SORT
+   Click Group header to toggle LOW -> HIGH / HIGH -> LOW.
+   Keeps each group's details row attached to its group row.
+   ========================================================= */
+var tdlGroupSortDirection = 'desc';
+
+function tdlSortGroups() {
+    var table = document.getElementById('groupsTable');
+    if (!table) return;
+
+    var tbody = table.querySelector('tbody');
+    if (!tbody) return;
+
+    /*
+     * Build one block per group.  The details row is found by its
+     * details-GROUP-ID so it can never be separated from its group.
+     */
+    var groupRows = Array.from(
+        tbody.querySelectorAll('tr.group-row[data-group-id]')
+    );
+
+    if (!groupRows.length) return;
+
+    var blocks = groupRows.map(function(groupRow) {
+        var gid = String(groupRow.getAttribute('data-group-id') || '').trim();
+        var detailsRow = document.getElementById('details-' + gid);
+
+        return {
+            groupRow: groupRow,
+            detailsRow: detailsRow,
+            id: Number(gid) || 0
+        };
+    });
+
+    /* Toggle every click: first click HIGH -> LOW, next LOW -> HIGH. */
+    tdlGroupSortDirection =
+        tdlGroupSortDirection === 'desc' ? 'asc' : 'desc';
+
+    blocks.sort(function(a, b) {
+        if (a.id === b.id) return 0;
+
+        return tdlGroupSortDirection === 'asc'
+            ? a.id - b.id
+            : b.id - a.id;
+    });
+
+    /* Re-append complete group blocks in the new order. */
+    var fragment = document.createDocumentFragment();
+
+    blocks.forEach(function(block) {
+        fragment.appendChild(block.groupRow);
+
+        if (block.detailsRow) {
+            fragment.appendChild(block.detailsRow);
+        }
+    });
+
+    tbody.appendChild(fragment);
+
+    var icon = document.getElementById('groupSortIcon');
+    if (icon) {
+        icon.textContent =
+            tdlGroupSortDirection === 'asc' ? '↑' : '↓';
+    }
+
+    /* Keep the existing search + area filtering exactly in sync. */
+    if (typeof tdlLiveSearch === 'function') {
+        tdlLiveSearch();
+    }
+}
+
 /* Area filter should also update immediately. */
 document.addEventListener('DOMContentLoaded', function() {
+    var groupSortHeader = document.getElementById('groupSortHeader');
+    if (groupSortHeader) {
+        groupSortHeader.addEventListener('click', function(event) {
+            event.preventDefault();
+            tdlSortGroups();
+        });
+    }
+
     tdlUpdateAreaButton();
 
     document.addEventListener('click', function(event) {

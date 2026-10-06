@@ -1,5 +1,13 @@
 <?php
 /* =========================================================
+   FAST OUTPUT - compress HTML/CSS/JS when the server supports it.
+   This does not change any application functionality.
+   ========================================================= */
+if (!headers_sent() && function_exists('ob_gzhandler')) {
+    ob_start('ob_gzhandler');
+}
+
+/* =========================================================
    THE DIVINE LANDS
    GROUP MANAGEMENT / GROUP DIRECTORY
    CORE PHP + MYSQL ONLY
@@ -38,44 +46,11 @@ if (!in_array($star_filter, ['', 'starred', 'not_starred'], true)) {
     $star_filter = '';
 }
 
-
-
-/* Fetch every unique individual area currently stored in data.area.
- * Example: "Naroda, Gandhinagar" becomes two separate filter choices. */
-$area_options = [];
-
-$areaResult = mysqli_query(
-    $con,
-    "SELECT area FROM data
-     WHERE TRIM(COALESCE(area, '')) <> ''
-     ORDER BY id ASC"
-);
-
-if ($areaResult) {
-    while ($areaRow = mysqli_fetch_assoc($areaResult)) {
-        $parts = preg_split('/\s*,\s*/', (string)($areaRow['area'] ?? ''));
-
-        foreach ($parts as $part) {
-            $part = trim($part);
-            if ($part === '') continue;
-
-            $exists = false;
-            foreach ($area_options as $existingArea) {
-                if (strcasecmp($existingArea, $part) === 0) {
-                    $exists = true;
-                    break;
-                }
-            }
-
-            if (!$exists) {
-                $area_options[] = $part;
-            }
-        }
-    }
+$group_sort = $_GET['group_sort'] ?? 'desc';
+if (!in_array($group_sort, ['asc', 'desc'], true)) {
+    $group_sort = 'desc';
 }
 
-natcasesort($area_options);
-$area_options = array_values($area_options);
 
 
 /* =========================================================
@@ -1495,271 +1470,153 @@ if (
 
 
 /* =========================================================
-   GROUP LIST
-   ========================================================= */
+   GROUP + PERSON DATA — SINGLE DATABASE READ
+   =========================================================
+   The previous version loaded groups first and then ran a second
+   large query for every person's group IDs.  On a large table this
+   means the data table can be scanned twice and a very large IN(...)
+   list has to be prepared.
 
+   This version reads the group/person records in ONE query.  The
+   area-star status is also calculated once in a derived table instead
+   of running an EXISTS lookup for every group.
+*/
 $groups = [];
 
-$groupSql = "
-    SELECT
-        d.grp_id,
-        MAX(d.company_name) AS company_name,
-        MAX(d.scheme_name) AS scheme_name,
-        MAX(d.area) AS area,
-        COALESCE(MAX(
-            CASE
-                WHEN LOWER(TRIM(COALESCE(a.star,'')))
-                     IN ('1','star','yes','true')
-                THEN 1
-                ELSE 0
-            END
-        ),0) AS is_starred
-    FROM data d
-    LEFT JOIN area a ON a.grp_id = d.grp_id
-    " . (
-        $star_filter === 'starred'
-        ? " WHERE EXISTS (
-                SELECT 1 FROM area ax
-                WHERE ax.grp_id=d.grp_id
-                  AND LOWER(TRIM(COALESCE(ax.star,'')))
-                      IN ('1','star','yes','true')
-            ) "
-        : (
-            $star_filter === 'not_starred'
-            ? " WHERE NOT EXISTS (
-                    SELECT 1 FROM area ax
-                    WHERE ax.grp_id=d.grp_id
-                      AND LOWER(TRIM(COALESCE(ax.star,'')))
-                          IN ('1','star','yes','true')
-                ) "
-            : ""
-        )
-    ) . "
-    GROUP BY d.grp_id
-    ORDER BY CAST(d.grp_id AS UNSIGNED) DESC
-";
+$groupSortSql = strtoupper($group_sort) === 'ASC' ? 'ASC' : 'DESC';
 
-$groupResult =
-    mysqli_query(
-        $con,
-        $groupSql
-    );
-
-if ($groupResult) {
-
-    while (
-        $row =
-        mysqli_fetch_assoc(
-            $groupResult
-        )
-    ) {
-
-        $grp_id =
-            (int)$row['grp_id'];
-
-        $groups[$grp_id] = [
-            'grp_id' =>
-                $grp_id,
-
-            'company_name' =>
-                $row[
-                    'company_name'
-                ],
-
-            'scheme_name' =>
-                $row[
-                    'scheme_name'
-                ],
-
-            'area' =>
-                $row[
-                    'area'
-                ],
-
-            'is_starred' =>
-                ((int)($row['is_starred'] ?? 0) === 1),
-
-            'persons' =>
-                [],
-
-            'main_persons' =>
-                [],
-
-            'relations' =>
-                []
-        ];
-    }
+$starWhereSql = '';
+if ($star_filter === 'starred') {
+    $starWhereSql = ' WHERE COALESCE(ast.is_starred, 0) = 1 ';
+} elseif ($star_filter === 'not_starred') {
+    $starWhereSql = ' WHERE COALESCE(ast.is_starred, 0) = 0 ';
 }
 
-
-/* =========================================================
-   PERSON DATA FOR GROUPS
-   ========================================================= */
-
-if (!empty($groups)) {
-
-    $ids =
-        array_keys($groups);
-
-    $placeholders =
-        implode(
-            ',',
-            array_fill(
-                0,
-                count($ids),
-                '?'
-            )
-        );
-
-    $types =
-        str_repeat(
-            'i',
-            count($ids)
-        );
-
-    $personSql = "
+$combinedSql = "
+    SELECT
+        d.id,
+        d.grp_id,
+        d.company_name,
+        d.scheme_name,
+        d.name,
+        d.number1,
+        d.number2,
+        d.number3,
+        d.relation1,
+        d.relation2,
+        d.relation_all,
+        d.`main`,
+        d.area,
+        COALESCE(ast.is_starred, 0) AS is_starred
+    FROM data d
+    LEFT JOIN (
         SELECT
-            id,
             grp_id,
-            company_name,
-            scheme_name,
-            name,
-            number1,
-            number2,
-            number3,
-            relation1,
-            relation2,
-            relation_all,
-            `main`,
-            area
-        FROM data
-        WHERE grp_id IN ($placeholders)
-        ORDER BY grp_id DESC, id ASC
-    ";
+            MAX(
+                CASE
+                    WHEN LOWER(TRIM(COALESCE(star,'')))
+                         IN ('1','star','yes','true')
+                    THEN 1
+                    ELSE 0
+                END
+            ) AS is_starred
+        FROM area
+        GROUP BY grp_id
+    ) ast ON ast.grp_id = d.grp_id
+    " . $starWhereSql . "
+    ORDER BY
+        CAST(d.grp_id AS UNSIGNED) " . $groupSortSql . ",
+        d.grp_id " . $groupSortSql . ",
+        d.id ASC
+";
 
-    $stmt =
-        mysqli_prepare(
-            $con,
-            $personSql
-        );
+$combinedResult = mysqli_query($con, $combinedSql);
 
-    if ($stmt) {
+if ($combinedResult) {
+    while ($person = mysqli_fetch_assoc($combinedResult)) {
+        $gid = (int)($person['grp_id'] ?? 0);
 
-        mysqli_stmt_bind_param(
-            $stmt,
-            $types,
-            ...$ids
-        );
+        if ($gid <= 0) {
+            continue;
+        }
 
-        mysqli_stmt_execute(
-            $stmt
-        );
+        if (!isset($groups[$gid])) {
+            $groups[$gid] = [
+                'grp_id'       => $gid,
+                'company_name' => $person['company_name'] ?? '',
+                'scheme_name'  => $person['scheme_name'] ?? '',
+                'area'         => $person['area'] ?? '',
+                'is_starred'   => ((int)($person['is_starred'] ?? 0) === 1),
+                'persons'      => [],
+                'main_persons' => [],
+                'relations'    => []
+            ];
+        }
 
-        $result =
-            mysqli_stmt_get_result(
-                $stmt
-            );
+        /*
+         * Preserve the old MAX()-style group values where records in
+         * one group contain different values.  This is done in PHP so
+         * no second database query is necessary.
+         */
+        if (strcmp((string)($person['company_name'] ?? ''), (string)$groups[$gid]['company_name']) > 0) {
+            $groups[$gid]['company_name'] = $person['company_name'] ?? '';
+        }
+        if (strcmp((string)($person['scheme_name'] ?? ''), (string)$groups[$gid]['scheme_name']) > 0) {
+            $groups[$gid]['scheme_name'] = $person['scheme_name'] ?? '';
+        }
+        if (strcmp((string)($person['area'] ?? ''), (string)$groups[$gid]['area']) > 0) {
+            $groups[$gid]['area'] = $person['area'] ?? '';
+        }
 
-        while (
-            $person =
-            mysqli_fetch_assoc($result)
-        ) {
+        $groups[$gid]['persons'][] = $person;
 
-            $gid =
-                (int)$person[
-                    'grp_id'
-                ];
-
-            if (
-                !isset(
-                    $groups[$gid]
-                )
-            ) {
-                continue;
-            }
-
-            $groups[$gid][
-                'persons'
-            ][] = $person;
-
-            $relation =
-                trim(
-                    $person[
-                        'relation_all'
-                    ] ?? ''
-                );
-
-            if (
-                $relation !== ''
-            ) {
-
-                $parts =
-                    preg_split(
-                        '/\s*,\s*/',
-                        $relation
-                    );
-
-                foreach (
-                    $parts as $part
-                ) {
-
-                    $part =
-                        trim($part);
-
-                    if (
-                        $part !== '' &&
-                        !in_array(
-                            $part,
-                            $groups[$gid][
-                                'relations'
-                            ],
-                            true
-                        )
-                    ) {
-
-                        $groups[$gid][
-                            'relations'
-                        ][] = $part;
-                    }
-                }
-            }
-
-            if (
-                trim(
-                    $person['main'] ?? ''
-                ) === 'main'
-            ) {
-
-                $mainName =
-                    trim(
-                        $person['name']
-                    );
-
-                if (
-                    $mainName !== '' &&
-                    !in_array(
-                        $mainName,
-                        $groups[$gid][
-                            'main_persons'
-                        ],
-                        true
-                    )
-                ) {
-
-                    $groups[$gid][
-                        'main_persons'
-                    ][] =
-                        $mainName;
+        $relation = trim((string)($person['relation_all'] ?? ''));
+        if ($relation !== '') {
+            $parts = preg_split('/\s*,\s*/', $relation);
+            foreach ($parts as $part) {
+                $part = trim($part);
+                if ($part !== '' && !in_array($part, $groups[$gid]['relations'], true)) {
+                    $groups[$gid]['relations'][] = $part;
                 }
             }
         }
 
-        mysqli_stmt_close(
-            $stmt
-        );
+        if (trim((string)($person['main'] ?? '')) === 'main') {
+            $mainName = trim((string)($person['name'] ?? ''));
+            if ($mainName !== '' && !in_array($mainName, $groups[$gid]['main_persons'], true)) {
+                $groups[$gid]['main_persons'][] = $mainName;
+            }
+        }
     }
 }
 
+/* =========================================================
+   BUILD AREA FILTER FROM ALREADY-LOADED GROUP DATA
+   ========================================================= */
+$areaMap = [];
+
+foreach ($groups as $group) {
+    $groupAreaString = (string)($group['area'] ?? '');
+    if ($groupAreaString === '') {
+        continue;
+    }
+
+    foreach (preg_split('/\s*,\s*/', $groupAreaString) as $part) {
+        $part = trim($part);
+        if ($part === '') {
+            continue;
+        }
+
+        $key = strtolower($part);
+        if (!isset($areaMap[$key])) {
+            $areaMap[$key] = $part;
+        }
+    }
+}
+
+$area_options = array_values($areaMap);
+natcasesort($area_options);
+$area_options = array_values($area_options);
 
 /* =========================================================
    TOTALS
@@ -2578,6 +2435,25 @@ tbody tr:hover {
 
 }
 
+.group-sort-header {
+    cursor: pointer;
+    user-select: none;
+}
+
+.group-sort-header:hover {
+    background: var(--navy-3);
+}
+
+.group-sort-header > span:first-child {
+    display: inline-block;
+    margin-right: 4px;
+}
+
+.group-sort-icon {
+    font-size: 12px;
+    opacity: .85;
+}
+
 
 .company {
 
@@ -3128,6 +3004,16 @@ tbody tr:hover {
 
 }
 
+
+.area-checks-lazy .area-loading-placeholder{
+    width:100%;
+    padding:10px 12px;
+    border:1px dashed var(--border);
+    border-radius:9px;
+    color:var(--muted);
+    font-size:11px;
+    background:#fafbfd;
+}
 
 .area-checks {
 
@@ -4104,8 +3990,14 @@ tbody tr:hover {
 
                 <tr>
 
-                    <th>
-                        Group
+                    <th class="group-sort-header" title="Click to sort Group high to low / low to high">
+                        <a
+                            href="?group_sort=<?= $group_sort === 'asc' ? 'desc' : 'asc' ?>&star_filter=<?= e($star_filter) ?>&q=<?= e($_GET['q'] ?? '') ?>"
+                            style="display:flex;align-items:center;gap:4px;color:inherit;text-decoration:none;width:100%;height:100%;cursor:pointer;"
+                        >
+                            <span>Group</span>
+                            <span class="group-sort-icon"><?= $group_sort === 'asc' ? '↑' : '↓' ?></span>
+                        </a>
                     </th>
 
                     <th>
@@ -4206,6 +4098,7 @@ $searchText =
 
                 <tr
                     class="group-row"
+                    data-group-id="<?= $gid ?>"
                     data-search="<?= e($searchText) ?>"
                     data-area="<?= e(
                         strtolower(
@@ -4314,8 +4207,15 @@ $searchText =
                                 ], static function ($v) { return $v !== ''; }));
                                 ?>
                                 <?php if (!empty($personNumbers)): ?>
-                                    <div style="margin-top:3px;font-size:11px;color:#667085;line-height:1.35;">
-                                        <?= e(implode(' • ', $personNumbers)) ?>
+                                    <div style="margin-top:3px;font-size:11px;line-height:1.35;">
+                                        <?php foreach ($personNumbers as $personNumber): ?>
+                                            <?php $waNumber = preg_replace('/[^0-9]/', '', (string)$personNumber); ?>
+                                            <?php if ($waNumber !== ''): ?>
+                                                <a href="https://wa.me/<?= e($waNumber) ?>" target="_blank" rel="noopener noreferrer" style="color:#159957;text-decoration:none;font-weight:700;display:inline-block;margin-right:7px;" title="Open WhatsApp"><?= e($personNumber) ?></a>
+                                            <?php else: ?>
+                                                <span style="display:inline-block;margin-right:7px;"><?= e($personNumber) ?></span>
+                                            <?php endif; ?>
+                                        <?php endforeach; ?>
                                     </div>
                                 <?php endif; ?>
                             </div>
@@ -4370,8 +4270,15 @@ $searchText =
                                     ], static function ($v) { return $v !== ''; }));
                                     ?>
                                     <?php if (!empty($mainNumbers)): ?>
-                                        <div style="margin-top:3px;font-size:11px;color:#667085;line-height:1.35;">
-                                            <?= e(implode(' • ', $mainNumbers)) ?>
+                                        <div style="margin-top:3px;font-size:11px;line-height:1.35;">
+                                            <?php foreach ($mainNumbers as $mainNumber): ?>
+                                                <?php $mainWaNumber = preg_replace('/[^0-9]/', '', (string)$mainNumber); ?>
+                                                <?php if ($mainWaNumber !== ''): ?>
+                                                    <a href="https://wa.me/<?= e($mainWaNumber) ?>" target="_blank" rel="noopener noreferrer" style="color:#159957;text-decoration:none;font-weight:700;display:inline-block;margin-right:7px;" title="Open WhatsApp"><?= e($mainNumber) ?></a>
+                                                <?php else: ?>
+                                                    <span style="display:inline-block;margin-right:7px;"><?= e($mainNumber) ?></span>
+                                                <?php endif; ?>
+                                            <?php endforeach; ?>
                                         </div>
                                     <?php endif; ?>
                                 <?php endif; ?>
@@ -4623,10 +4530,6 @@ if (
                                             </div>
 
 
-                                            <div
-                                                class="area-checks"
-                                            >
-
 <?php
 
 $currentAreas = preg_split(
@@ -4634,51 +4537,28 @@ $currentAreas = preg_split(
     (string)($group['area'] ?? '')
 );
 
-$currentAreasNormalized = array_map(
+$currentAreasNormalized = array_values(array_filter(array_map(
     static function ($value) {
         return strtolower(trim((string)$value));
     },
     $currentAreas ?: []
-);
+)));
 
 ?>
 
-<?php foreach (
-    $area_options
-    as $area
-): ?>
-
-                                                <div
-                                                    class="area-check"
-                                                >
-
-                                                    <input
-                                                        type="checkbox"
-                                                        id="edit_<?= $gid ?>_<?= md5($area) ?>"
-                                                        name="areas[]"
-                                                        value="<?= e($area) ?>"
-                                                        <?= in_array(
-                                                            strtolower(trim((string)$area)),
-                                                            $currentAreasNormalized,
-                                                            true
-                                                        )
-                                                            ? 'checked'
-                                                            : ''
-                                                        ?>
-                                                    >
-
-                                                    <label
-                                                        for="edit_<?= $gid ?>_<?= md5($area) ?>"
-                                                    >
-                                                        <?= e(
-                                                            ucwords($area)
-                                                        ) ?>
-                                                    </label>
-
+                                            <!--
+                                                IMPORTANT PERFORMANCE OPTIMIZATION:
+                                                Do not render every area checkbox for every group.
+                                                The full area list is created once in JavaScript and
+                                                populated only when this group is actually opened for edit.
+                                            -->
+                                            <div
+                                                class="area-checks area-checks-lazy"
+                                                data-current-areas='<?= e(json_encode($currentAreasNormalized, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)) ?>'
+                                            >
+                                                <div class="area-loading-placeholder">
+                                                    Areas load when Edit is opened…
                                                 </div>
-
-<?php endforeach; ?>
-
                                             </div>
 
                                         </div>
@@ -4692,8 +4572,7 @@ $currentAreasNormalized = array_map(
                                                 type="submit"
                                                 name="update_group"
                                                 value="1"
-                                                class="btn btn-save"
-                                             type="submit">
+                                                class="btn btn-save">
                                                 ✓ Save Group
                                             </button>
 
@@ -4744,6 +4623,17 @@ $currentAreasNormalized = array_map(
 
 
                                 <div class="panel-body">
+
+                                    <?php foreach ($group['persons'] as $personForm): ?>
+                                        <form
+                                            id="person-form-<?= (int)$personForm['id'] ?>"
+                                            method="POST"
+                                            style="display:none"
+                                        >
+                                            <input type="hidden" name="id" value="<?= (int)$personForm['id'] ?>">
+                                            <input type="hidden" name="grp_id" value="<?= (int)$gid ?>">
+                                        </form>
+                                    <?php endforeach; ?>
 
                                     <div
                                         class="person-table-wrap"
@@ -4828,7 +4718,6 @@ foreach (
                                                     data-person-id="<?= (int)$person['id'] ?>"
                                                 >
 
-                                                    
 
                                                         <td>
                                                             <?= $personNo ?>
@@ -4836,10 +4725,10 @@ foreach (
 
                                                         <td>
 
-                                                            <input form="personEditForm_95148"
+                                                            <input
                                                                 class="person-input person-name"
                                                                 type="text"
-                                                                name="name" data-field="name"
+                                                                name="name" data-field="name" form="person-form-<?= (int)$person['id'] ?>"
                                                                 value="<?= e(
                                                                     $person[
                                                                         'name'
@@ -4853,10 +4742,10 @@ foreach (
 
                                                         <td>
 
-                                                            <input form="personEditForm_95148"
+                                                            <input
                                                                 class="person-input"
                                                                 type="text"
-                                                                name="number1" data-field="number1"
+                                                                name="number1" data-field="number1" form="person-form-<?= (int)$person['id'] ?>"
                                                                 value="<?= e(
                                                                     $person[
                                                                         'number1'
@@ -4869,10 +4758,10 @@ foreach (
 
                                                         <td>
 
-                                                            <input form="personEditForm_95148"
+                                                            <input
                                                                 class="person-input"
                                                                 type="text"
-                                                                name="number2" data-field="number2"
+                                                                name="number2" data-field="number2" form="person-form-<?= (int)$person['id'] ?>"
                                                                 value="<?= e(
                                                                     $person[
                                                                         'number2'
@@ -4885,10 +4774,10 @@ foreach (
 
                                                         <td>
 
-                                                            <input form="personEditForm_95148"
+                                                            <input
                                                                 class="person-input"
                                                                 type="text"
-                                                                name="number3" data-field="number3"
+                                                                name="number3" data-field="number3" form="person-form-<?= (int)$person['id'] ?>"
                                                                 value="<?= e(
                                                                     $person[
                                                                         'number3'
@@ -4901,10 +4790,10 @@ foreach (
 
                                                         <td>
 
-                                                            <input form="personEditForm_95148"
+                                                            <input
                                                                 class="person-input"
                                                                 type="text"
-                                                                name="relation1" data-field="relation1"
+                                                                name="relation1" data-field="relation1" form="person-form-<?= (int)$person['id'] ?>"
                                                                 value="<?= e(
                                                                     $person[
                                                                         'relation1'
@@ -4917,10 +4806,10 @@ foreach (
 
                                                         <td>
 
-                                                            <input form="personEditForm_95148"
+                                                            <input
                                                                 class="person-input"
                                                                 type="text"
-                                                                name="relation2" data-field="relation2"
+                                                                name="relation2" data-field="relation2" form="person-form-<?= (int)$person['id'] ?>"
                                                                 value="<?= e(
                                                                     $person[
                                                                         'relation2'
@@ -4933,7 +4822,7 @@ foreach (
 
                                                         <td>
 
-                                                            <input form="personEditForm_95148"
+                                                            <input
                                                                 class="person-input"
                                                                 type="text"
                                                                 value="<?= e(
@@ -4949,8 +4838,8 @@ foreach (
 
                                                         <td>
 
-                                                            <select form="personEditForm_95148"
-                                                                name="main" data-field="main"
+                                                            <select
+                                                                name="main" data-field="main" form="person-form-<?= (int)$person['id'] ?>"
                                                                 class="main-select"
                                                             >
 
@@ -4989,35 +4878,22 @@ foreach (
 
                                                         <td>
 
-                                                            <form id="personEditForm_95148" method="POST"></form>
-
-<input form="personEditForm_95148"
-                                                                type="hidden"
-                                                                name="id"
-                                                                value="<?= (int)$person['id'] ?>"
-                                                            >
-
-                                                            <input form="personEditForm_95148"
-                                                                type="hidden"
-                                                                name="grp_id"
-                                                                value="<?= $gid ?>"
-                                                            >
-
-
-                                                            <button form="personEditForm_95148"
+                                                            <button
                                                                 type="submit"
                                                                 name="update_person"
                                                                 value="1"
+                                                                form="person-form-<?= (int)$person['id'] ?>"
                                                                 class="btn btn-save"
                                                             >
                                                                 Save
                                                             </button>
 
 
-                                                            <button form="personEditForm_95148"
+                                                            <button
                                                                 type="submit"
                                                                 name="delete_person"
                                                                 value="1"
+                                                                form="person-form-<?= (int)$person['id'] ?>"
                                                                 class="btn btn-delete"
                                                                 onclick="return confirm('Delete this person from Group #<?= $gid ?>?');"
                                                             >
@@ -5025,8 +4901,6 @@ foreach (
                                                             </button>
 
                                                         </td>
-
-                                                    
 
                                                 </tr>
 
@@ -5310,6 +5184,13 @@ endforeach;
 
 <script>
 
+/*
+ * Full area list is transferred to the browser ONCE.
+ * Edit forms build their checkboxes only when opened.
+ * This removes the largest repeated HTML block from initial page load.
+ */
+window.tdlAreaOptions = <?= json_encode(array_values($area_options), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+
 
 /* =========================================================
    LIVE GROUP SEARCH + HIGHLIGHT
@@ -5560,21 +5441,11 @@ function tdlLiveSearch() {
     tdlApplyHighlights(query);
 }
 
-/* Area filter should also update immediately. */
-document.addEventListener('DOMContentLoaded', function() {
-    tdlUpdateAreaButton();
-
-    document.addEventListener('click', function(event) {
-        var wrap = document.getElementById('areaSelectWrap');
-        if (wrap && !wrap.contains(event.target)) {
-            wrap.classList.remove('open');
-        }
-    });
-
-    /* If browser restored a previous search value, apply it once. */
-    tdlLiveSearch();
-});
-
+/* =========================================================
+   GROUP COLUMN SORT
+   Sorting is handled by PHP/SQL so it cannot interfere with
+   any other JavaScript functionality on this page.
+   ========================================================= */
 
 /* =========================================================
    VIEW DETAILS
@@ -5651,6 +5522,74 @@ function closeDetails(
    EDIT MODE
    ========================================================= */
 
+function tdlBuildEditAreas(edit)
+{
+    if (!edit || edit.dataset.areasLoaded === '1') {
+        return;
+    }
+
+    const container = edit.querySelector('.area-checks-lazy');
+    if (!container) {
+        edit.dataset.areasLoaded = '1';
+        return;
+    }
+
+    let currentAreas = [];
+
+    try {
+        currentAreas = JSON.parse(
+            container.getAttribute('data-current-areas') || '[]'
+        );
+    } catch (e) {
+        currentAreas = [];
+    }
+
+    const currentSet = new Set(
+        currentAreas.map(function(value) {
+            return String(value || '').trim().toLowerCase();
+        })
+    );
+
+    const fragment = document.createDocumentFragment();
+
+    if (!Array.isArray(window.tdlAreaOptions) || !window.tdlAreaOptions.length) {
+        container.innerHTML = '<div style="color:var(--muted);font-size:11px">No areas available.</div>';
+        edit.dataset.areasLoaded = '1';
+        return;
+    }
+
+    const gid = edit.id.replace('group-edit-', '');
+
+    window.tdlAreaOptions.forEach(function(area, index) {
+        const cleanArea = String(area || '').trim();
+        if (!cleanArea) return;
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'area-check';
+
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.name = 'areas[]';
+        input.value = cleanArea;
+        input.id = 'edit_' + gid + '_area_' + index;
+        input.checked = currentSet.has(cleanArea.toLowerCase());
+
+        const label = document.createElement('label');
+        label.htmlFor = input.id;
+        label.textContent = cleanArea
+            .toLowerCase()
+            .replace(/\b\w/g, function(letter) { return letter.toUpperCase(); });
+
+        wrapper.appendChild(input);
+        wrapper.appendChild(label);
+        fragment.appendChild(wrapper);
+    });
+
+    container.replaceChildren(fragment);
+    edit.dataset.areasLoaded = '1';
+}
+
+
 function toggleEdit(
     grpId,
     show
@@ -5667,6 +5606,9 @@ function toggleEdit(
         return;
     }
 
+    if (show) {
+        tdlBuildEditAreas(edit);
+    }
 
     edit.style.display =
         show

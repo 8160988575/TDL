@@ -1,5 +1,13 @@
 <?php
 /* =========================================================
+   FAST OUTPUT - compress HTML/CSS/JS when the server supports it.
+   This does not change any application functionality.
+   ========================================================= */
+if (!headers_sent() && function_exists('ob_gzhandler')) {
+    ob_start('ob_gzhandler');
+}
+
+/* =========================================================
    THE DIVINE LANDS
    GROUP MANAGEMENT / GROUP DIRECTORY
    CORE PHP + MYSQL ONLY
@@ -26,6 +34,85 @@ if (!$con) {
 
 mysqli_set_charset($con, 'utf8mb4');
 
+/* =========================================================
+   SINGLE-FILE AJAX DETAILS ENDPOINT
+   The same PHP file serves the page and on-demand group details.
+   ========================================================= */
+if (isset($_GET['ajax_group'])) {
+    header('Content-Type: application/json; charset=utf-8');
+
+    $gid = (int)($_GET['ajax_group'] ?? 0);
+    if ($gid <= 0) {
+        http_response_code(400);
+        echo json_encode(['ok'=>false,'error'=>'Invalid group ID']);
+        exit;
+    }
+
+    $stmt = mysqli_prepare($con, "SELECT id, grp_id, company_name, scheme_name, name, number1, number2, number3, relation1, relation2, relation_all, `main`, area FROM data WHERE grp_id = ? ORDER BY id ASC");
+    if (!$stmt) {
+        http_response_code(500);
+        echo json_encode(['ok'=>false,'error'=>mysqli_error($con)]);
+        exit;
+    }
+
+    mysqli_stmt_bind_param($stmt, 'i', $gid);
+    mysqli_stmt_execute($stmt);
+    $result = mysqli_stmt_get_result($stmt);
+
+    $persons = [];
+    $group = ['grp_id'=>$gid,'company_name'=>'','scheme_name'=>'','area'=>''];
+    $relations = [];
+    $mainPersons = [];
+
+    while ($row = mysqli_fetch_assoc($result)) {
+        if ($group['company_name'] === '') $group['company_name'] = $row['company_name'] ?? '';
+        elseif (strcmp((string)($row['company_name'] ?? ''), (string)$group['company_name']) > 0) $group['company_name'] = $row['company_name'] ?? '';
+
+        if ($group['scheme_name'] === '') $group['scheme_name'] = $row['scheme_name'] ?? '';
+        elseif (strcmp((string)($row['scheme_name'] ?? ''), (string)$group['scheme_name']) > 0) $group['scheme_name'] = $row['scheme_name'] ?? '';
+
+        if ($group['area'] === '') $group['area'] = $row['area'] ?? '';
+        elseif (strcmp((string)($row['area'] ?? ''), (string)$group['area']) > 0) $group['area'] = $row['area'] ?? '';
+
+        $persons[] = $row;
+
+        $rel = trim((string)($row['relation_all'] ?? ''));
+        if ($rel !== '') {
+            foreach (preg_split('/\s*,\s*/', $rel) as $r) {
+                $r = trim($r);
+                if ($r !== '' && !in_array($r, $relations, true)) $relations[] = $r;
+            }
+        }
+
+        if (trim((string)($row['main'] ?? '')) === 'main') {
+            $mn = trim((string)($row['name'] ?? ''));
+            if ($mn !== '' && !in_array($mn, $mainPersons, true)) $mainPersons[] = $mn;
+        }
+    }
+    mysqli_stmt_close($stmt);
+
+    $star = 0;
+    $st = mysqli_prepare($con, "SELECT MAX(CASE WHEN LOWER(TRIM(COALESCE(star,''))) IN ('1','star','yes','true') THEN 1 ELSE 0 END) AS is_starred FROM area WHERE grp_id = ?");
+    if ($st) {
+        mysqli_stmt_bind_param($st, 'i', $gid);
+        mysqli_stmt_execute($st);
+        $sr = mysqli_stmt_get_result($st);
+        if ($x = mysqli_fetch_assoc($sr)) $star = (int)($x['is_starred'] ?? 0);
+        mysqli_stmt_close($st);
+    }
+
+    echo json_encode([
+        'ok'=>true,
+        'group'=>$group,
+        'persons'=>$persons,
+        'relations'=>$relations,
+        'main_persons'=>$mainPersons,
+        'is_starred'=>$star
+    ], JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
+    exit;
+}
+
+
 
 /* =========================================================
    VARIABLES
@@ -38,44 +125,11 @@ if (!in_array($star_filter, ['', 'starred', 'not_starred'], true)) {
     $star_filter = '';
 }
 
-
-
-/* Fetch every unique individual area currently stored in data.area.
- * Example: "Naroda, Gandhinagar" becomes two separate filter choices. */
-$area_options = [];
-
-$areaResult = mysqli_query(
-    $con,
-    "SELECT area FROM data
-     WHERE TRIM(COALESCE(area, '')) <> ''
-     ORDER BY id ASC"
-);
-
-if ($areaResult) {
-    while ($areaRow = mysqli_fetch_assoc($areaResult)) {
-        $parts = preg_split('/\s*,\s*/', (string)($areaRow['area'] ?? ''));
-
-        foreach ($parts as $part) {
-            $part = trim($part);
-            if ($part === '') continue;
-
-            $exists = false;
-            foreach ($area_options as $existingArea) {
-                if (strcasecmp($existingArea, $part) === 0) {
-                    $exists = true;
-                    break;
-                }
-            }
-
-            if (!$exists) {
-                $area_options[] = $part;
-            }
-        }
-    }
+$group_sort = $_GET['group_sort'] ?? 'desc';
+if (!in_array($group_sort, ['asc', 'desc'], true)) {
+    $group_sort = 'desc';
 }
 
-natcasesort($area_options);
-$area_options = array_values($area_options);
 
 
 /* =========================================================
@@ -690,22 +744,24 @@ if (
         $areas = [];
     }
 
-    /* Keep submitted area values matched case-insensitively
-       against the individual area options. */
-    $validAreaMap = [];
-    foreach ($area_options as $validArea) {
-        $validAreaMap[strtolower(trim((string)$validArea))] = $validArea;
-    }
-
+    /*
+     * The area filter/options are built later from the already-loaded
+     * group data so the initial page stays fast.
+     *
+     * IMPORTANT: do not access $area_options here. During a POST request
+     * the update handler runs before the display/query section builds that
+     * variable. The submitted values already came from the area checkboxes,
+     * so we only need to clean and de-duplicate them here.
+     */
     $cleanAreas = [];
     foreach ($areas as $submittedArea) {
-        $key = strtolower(trim((string)$submittedArea));
-        if ($key !== '' && isset($validAreaMap[$key])) {
-            $cleanAreas[] = $validAreaMap[$key];
+        $submittedArea = trim((string)$submittedArea);
+        if ($submittedArea !== '') {
+            $cleanAreas[] = $submittedArea;
         }
     }
 
-    $areas = array_values(array_unique($cleanAreas));
+    $areas = array_values(array_unique($cleanAreas, SORT_STRING));
 
     if ($grp_id <= 0) {
 
@@ -1495,271 +1551,153 @@ if (
 
 
 /* =========================================================
-   GROUP LIST
-   ========================================================= */
+   GROUP + PERSON DATA — SINGLE DATABASE READ
+   =========================================================
+   The previous version loaded groups first and then ran a second
+   large query for every person's group IDs.  On a large table this
+   means the data table can be scanned twice and a very large IN(...)
+   list has to be prepared.
 
+   This version reads the group/person records in ONE query.  The
+   area-star status is also calculated once in a derived table instead
+   of running an EXISTS lookup for every group.
+*/
 $groups = [];
 
-$groupSql = "
-    SELECT
-        d.grp_id,
-        MAX(d.company_name) AS company_name,
-        MAX(d.scheme_name) AS scheme_name,
-        MAX(d.area) AS area,
-        COALESCE(MAX(
-            CASE
-                WHEN LOWER(TRIM(COALESCE(a.star,'')))
-                     IN ('1','star','yes','true')
-                THEN 1
-                ELSE 0
-            END
-        ),0) AS is_starred
-    FROM data d
-    LEFT JOIN area a ON a.grp_id = d.grp_id
-    " . (
-        $star_filter === 'starred'
-        ? " WHERE EXISTS (
-                SELECT 1 FROM area ax
-                WHERE ax.grp_id=d.grp_id
-                  AND LOWER(TRIM(COALESCE(ax.star,'')))
-                      IN ('1','star','yes','true')
-            ) "
-        : (
-            $star_filter === 'not_starred'
-            ? " WHERE NOT EXISTS (
-                    SELECT 1 FROM area ax
-                    WHERE ax.grp_id=d.grp_id
-                      AND LOWER(TRIM(COALESCE(ax.star,'')))
-                          IN ('1','star','yes','true')
-                ) "
-            : ""
-        )
-    ) . "
-    GROUP BY d.grp_id
-    ORDER BY CAST(d.grp_id AS UNSIGNED) DESC
-";
+$groupSortSql = strtoupper($group_sort) === 'ASC' ? 'ASC' : 'DESC';
 
-$groupResult =
-    mysqli_query(
-        $con,
-        $groupSql
-    );
-
-if ($groupResult) {
-
-    while (
-        $row =
-        mysqli_fetch_assoc(
-            $groupResult
-        )
-    ) {
-
-        $grp_id =
-            (int)$row['grp_id'];
-
-        $groups[$grp_id] = [
-            'grp_id' =>
-                $grp_id,
-
-            'company_name' =>
-                $row[
-                    'company_name'
-                ],
-
-            'scheme_name' =>
-                $row[
-                    'scheme_name'
-                ],
-
-            'area' =>
-                $row[
-                    'area'
-                ],
-
-            'is_starred' =>
-                ((int)($row['is_starred'] ?? 0) === 1),
-
-            'persons' =>
-                [],
-
-            'main_persons' =>
-                [],
-
-            'relations' =>
-                []
-        ];
-    }
+$starWhereSql = '';
+if ($star_filter === 'starred') {
+    $starWhereSql = ' WHERE COALESCE(ast.is_starred, 0) = 1 ';
+} elseif ($star_filter === 'not_starred') {
+    $starWhereSql = ' WHERE COALESCE(ast.is_starred, 0) = 0 ';
 }
 
-
-/* =========================================================
-   PERSON DATA FOR GROUPS
-   ========================================================= */
-
-if (!empty($groups)) {
-
-    $ids =
-        array_keys($groups);
-
-    $placeholders =
-        implode(
-            ',',
-            array_fill(
-                0,
-                count($ids),
-                '?'
-            )
-        );
-
-    $types =
-        str_repeat(
-            'i',
-            count($ids)
-        );
-
-    $personSql = "
+$combinedSql = "
+    SELECT
+        d.id,
+        d.grp_id,
+        d.company_name,
+        d.scheme_name,
+        d.name,
+        d.number1,
+        d.number2,
+        d.number3,
+        d.relation1,
+        d.relation2,
+        d.relation_all,
+        d.`main`,
+        d.area,
+        COALESCE(ast.is_starred, 0) AS is_starred
+    FROM data d
+    LEFT JOIN (
         SELECT
-            id,
             grp_id,
-            company_name,
-            scheme_name,
-            name,
-            number1,
-            number2,
-            number3,
-            relation1,
-            relation2,
-            relation_all,
-            `main`,
-            area
-        FROM data
-        WHERE grp_id IN ($placeholders)
-        ORDER BY grp_id DESC, id ASC
-    ";
+            MAX(
+                CASE
+                    WHEN LOWER(TRIM(COALESCE(star,'')))
+                         IN ('1','star','yes','true')
+                    THEN 1
+                    ELSE 0
+                END
+            ) AS is_starred
+        FROM area
+        GROUP BY grp_id
+    ) ast ON ast.grp_id = d.grp_id
+    " . $starWhereSql . "
+    ORDER BY
+        CAST(d.grp_id AS UNSIGNED) " . $groupSortSql . ",
+        d.grp_id " . $groupSortSql . ",
+        d.id ASC
+";
 
-    $stmt =
-        mysqli_prepare(
-            $con,
-            $personSql
-        );
+$combinedResult = mysqli_query($con, $combinedSql);
 
-    if ($stmt) {
+if ($combinedResult) {
+    while ($person = mysqli_fetch_assoc($combinedResult)) {
+        $gid = (int)($person['grp_id'] ?? 0);
 
-        mysqli_stmt_bind_param(
-            $stmt,
-            $types,
-            ...$ids
-        );
+        if ($gid <= 0) {
+            continue;
+        }
 
-        mysqli_stmt_execute(
-            $stmt
-        );
+        if (!isset($groups[$gid])) {
+            $groups[$gid] = [
+                'grp_id'       => $gid,
+                'company_name' => $person['company_name'] ?? '',
+                'scheme_name'  => $person['scheme_name'] ?? '',
+                'area'         => $person['area'] ?? '',
+                'is_starred'   => ((int)($person['is_starred'] ?? 0) === 1),
+                'persons'      => [],
+                'main_persons' => [],
+                'relations'    => []
+            ];
+        }
 
-        $result =
-            mysqli_stmt_get_result(
-                $stmt
-            );
+        /*
+         * Preserve the old MAX()-style group values where records in
+         * one group contain different values.  This is done in PHP so
+         * no second database query is necessary.
+         */
+        if (strcmp((string)($person['company_name'] ?? ''), (string)$groups[$gid]['company_name']) > 0) {
+            $groups[$gid]['company_name'] = $person['company_name'] ?? '';
+        }
+        if (strcmp((string)($person['scheme_name'] ?? ''), (string)$groups[$gid]['scheme_name']) > 0) {
+            $groups[$gid]['scheme_name'] = $person['scheme_name'] ?? '';
+        }
+        if (strcmp((string)($person['area'] ?? ''), (string)$groups[$gid]['area']) > 0) {
+            $groups[$gid]['area'] = $person['area'] ?? '';
+        }
 
-        while (
-            $person =
-            mysqli_fetch_assoc($result)
-        ) {
+        $groups[$gid]['persons'][] = $person;
 
-            $gid =
-                (int)$person[
-                    'grp_id'
-                ];
-
-            if (
-                !isset(
-                    $groups[$gid]
-                )
-            ) {
-                continue;
-            }
-
-            $groups[$gid][
-                'persons'
-            ][] = $person;
-
-            $relation =
-                trim(
-                    $person[
-                        'relation_all'
-                    ] ?? ''
-                );
-
-            if (
-                $relation !== ''
-            ) {
-
-                $parts =
-                    preg_split(
-                        '/\s*,\s*/',
-                        $relation
-                    );
-
-                foreach (
-                    $parts as $part
-                ) {
-
-                    $part =
-                        trim($part);
-
-                    if (
-                        $part !== '' &&
-                        !in_array(
-                            $part,
-                            $groups[$gid][
-                                'relations'
-                            ],
-                            true
-                        )
-                    ) {
-
-                        $groups[$gid][
-                            'relations'
-                        ][] = $part;
-                    }
-                }
-            }
-
-            if (
-                trim(
-                    $person['main'] ?? ''
-                ) === 'main'
-            ) {
-
-                $mainName =
-                    trim(
-                        $person['name']
-                    );
-
-                if (
-                    $mainName !== '' &&
-                    !in_array(
-                        $mainName,
-                        $groups[$gid][
-                            'main_persons'
-                        ],
-                        true
-                    )
-                ) {
-
-                    $groups[$gid][
-                        'main_persons'
-                    ][] =
-                        $mainName;
+        $relation = trim((string)($person['relation_all'] ?? ''));
+        if ($relation !== '') {
+            $parts = preg_split('/\s*,\s*/', $relation);
+            foreach ($parts as $part) {
+                $part = trim($part);
+                if ($part !== '' && !in_array($part, $groups[$gid]['relations'], true)) {
+                    $groups[$gid]['relations'][] = $part;
                 }
             }
         }
 
-        mysqli_stmt_close(
-            $stmt
-        );
+        if (trim((string)($person['main'] ?? '')) === 'main') {
+            $mainName = trim((string)($person['name'] ?? ''));
+            if ($mainName !== '' && !in_array($mainName, $groups[$gid]['main_persons'], true)) {
+                $groups[$gid]['main_persons'][] = $mainName;
+            }
+        }
     }
 }
 
+/* =========================================================
+   BUILD AREA FILTER FROM ALREADY-LOADED GROUP DATA
+   ========================================================= */
+$areaMap = [];
+
+foreach ($groups as $group) {
+    $groupAreaString = (string)($group['area'] ?? '');
+    if ($groupAreaString === '') {
+        continue;
+    }
+
+    foreach (preg_split('/\s*,\s*/', $groupAreaString) as $part) {
+        $part = trim($part);
+        if ($part === '') {
+            continue;
+        }
+
+        $key = strtolower($part);
+        if (!isset($areaMap[$key])) {
+            $areaMap[$key] = $part;
+        }
+    }
+}
+
+$area_options = array_values($areaMap);
+natcasesort($area_options);
+$area_options = array_values($area_options);
 
 /* =========================================================
    TOTALS
@@ -2578,6 +2516,25 @@ tbody tr:hover {
 
 }
 
+.group-sort-header {
+    cursor: pointer;
+    user-select: none;
+}
+
+.group-sort-header:hover {
+    background: var(--navy-3);
+}
+
+.group-sort-header > span:first-child {
+    display: inline-block;
+    margin-right: 4px;
+}
+
+.group-sort-icon {
+    font-size: 12px;
+    opacity: .85;
+}
+
 
 .company {
 
@@ -3128,6 +3085,16 @@ tbody tr:hover {
 
 }
 
+
+.area-checks-lazy .area-loading-placeholder{
+    width:100%;
+    padding:10px 12px;
+    border:1px dashed var(--border);
+    border-radius:9px;
+    color:var(--muted);
+    font-size:11px;
+    background:#fafbfd;
+}
 
 .area-checks {
 
@@ -3830,6 +3797,115 @@ tbody tr:hover {
     line-height:inherit !important;
 }
 
+
+
+/* =========================================================
+   WHATSAPP SELECTION UI
+   ========================================================= */
+.tdl-wa-panel {
+    margin: 0 0 18px;
+    background: linear-gradient(135deg, #ffffff, #f8fbfa);
+    border: 1px solid #dce8e1;
+    border-radius: 16px;
+    padding: 16px;
+    box-shadow: 0 8px 24px rgba(16, 28, 50, .07);
+}
+.tdl-wa-panel-head {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:15px;
+    margin-bottom:13px;
+}
+.tdl-wa-title { font-size:17px; font-weight:800; color:var(--navy); }
+.tdl-wa-subtitle { margin-top:3px; color:var(--muted); font-size:12px; }
+.tdl-selected-pill {
+    white-space:nowrap;
+    background:#edf8f1;
+    color:#137b47;
+    border:1px solid #cfe9da;
+    border-radius:999px;
+    padding:8px 13px;
+    font-size:13px;
+}
+.tdl-wa-controls { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.tdl-wa-select {
+    min-height:38px;
+    border:1px solid #d7dee8;
+    border-radius:9px;
+    padding:0 11px;
+    background:#fff;
+    color:var(--text);
+    font-weight:600;
+    outline:none;
+}
+.tdl-wa-select:focus { border-color:var(--green); box-shadow:0 0 0 3px rgba(21,153,87,.10); }
+.tdl-wa-btn {
+    min-height:38px;
+    border-radius:9px;
+    padding:0 13px;
+    border:1px solid transparent;
+    cursor:pointer;
+    font-weight:800;
+    transition:.15s ease;
+}
+.tdl-wa-btn:hover { transform:translateY(-1px); }
+.tdl-wa-btn-light { background:#fff; color:var(--navy); border-color:#d7dee8; }
+.tdl-wa-btn-green { background:#159957; color:#fff; box-shadow:0 5px 14px rgba(21,153,87,.20); }
+.tdl-message-wrap { margin-top:12px; }
+.tdl-message-wrap label { display:flex; justify-content:space-between; gap:10px; margin-bottom:6px; font-size:12px; font-weight:800; color:var(--navy); }
+.tdl-message-wrap label span { color:var(--muted); font-weight:500; }
+#tdlWhatsAppMessage { width:100%; resize:vertical; min-height:58px; border:1px solid #d7dee8; border-radius:9px; padding:10px 12px; font:inherit; outline:none; }
+#tdlWhatsAppMessage:focus { border-color:var(--green); box-shadow:0 0 0 3px rgba(21,153,87,.10); }
+.tdl-wa-status { margin-top:9px; font-size:12px; color:var(--muted); }
+
+.tdl-person-item { transition:opacity .15s ease, background .15s ease; }
+.tdl-person-head { display:flex; align-items:center; gap:7px; min-height:22px; }
+.tdl-person-select-label { width:22px; height:22px; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; flex:0 0 22px; }
+.tdl-person-checkbox { position:absolute; opacity:0; width:1px; height:1px; pointer-events:none; }
+.tdl-checkmark { width:16px; height:16px; border:2px solid #aeb9c7; border-radius:4px; background:#fff; display:block; position:relative; transition:.12s ease; }
+.tdl-person-checkbox:checked + .tdl-checkmark { background:#159957; border-color:#159957; }
+.tdl-person-checkbox:checked + .tdl-checkmark:after { content:'✓'; position:absolute; color:#fff; font-size:12px; font-weight:900; left:1px; top:-2px; }
+.tdl-wa-ready, .tdl-wa-missing { display:inline-block; font-size:9px; font-weight:900; border-radius:999px; padding:2px 5px; letter-spacing:.2px; }
+.tdl-wa-ready { background:#e9f8ef; color:#13814b; }
+.tdl-wa-missing { background:#f2f3f5; color:#7b8491; }
+.tdl-person-item.tdl-person-hidden { display:none !important; }
+.tdl-group-no-visible-persons { display:none !important; }
+
+/* =========================================================
+   WHATSAPP STEP MODAL
+   ========================================================= */
+.tdl-wa-modal {
+    position:fixed; inset:0; z-index:99999; display:none;
+    align-items:center; justify-content:center; padding:18px;
+    background:rgba(8,16,29,.65); backdrop-filter:blur(4px);
+}
+.tdl-wa-modal.open { display:flex; }
+.tdl-wa-dialog { width:min(560px, 100%); background:#fff; border-radius:18px; overflow:hidden; box-shadow:0 25px 70px rgba(0,0,0,.30); }
+.tdl-wa-dialog-head { padding:17px 19px; background:linear-gradient(135deg,var(--navy),var(--navy-2)); color:#fff; display:flex; justify-content:space-between; align-items:center; }
+.tdl-wa-dialog-head strong { font-size:17px; }
+.tdl-wa-close { border:0; background:rgba(255,255,255,.10); color:#fff; width:34px; height:34px; border-radius:8px; cursor:pointer; font-size:18px; }
+.tdl-wa-dialog-body { padding:20px; }
+.tdl-wa-progress { height:7px; background:#edf0f4; border-radius:99px; overflow:hidden; margin:0 0 18px; }
+.tdl-wa-progress > div { height:100%; background:#159957; width:0%; transition:.2s ease; }
+.tdl-wa-contact { border:1px solid #e2e7ed; border-radius:13px; padding:17px; background:#fafcfd; }
+.tdl-wa-contact-name { font-size:21px; font-weight:900; color:var(--navy); }
+.tdl-wa-contact-number { margin-top:5px; color:#159957; font-weight:800; font-size:15px; }
+.tdl-wa-contact-meta { margin-top:8px; color:var(--muted); font-size:12px; line-height:1.6; }
+.tdl-wa-dialog-actions { display:flex; gap:8px; margin-top:15px; flex-wrap:wrap; }
+.tdl-wa-dialog-actions button { min-height:42px; border-radius:9px; padding:0 14px; border:1px solid #d7dee8; cursor:pointer; font-weight:800; }
+.tdl-wa-open-btn { background:#159957; color:#fff; border-color:#159957 !important; flex:1; }
+.tdl-wa-next-btn { background:var(--navy); color:#fff; border-color:var(--navy) !important; flex:1; }
+.tdl-wa-skip-btn { background:#fff; color:var(--text); }
+.tdl-wa-dialog-note { margin-top:12px; font-size:11px; color:var(--muted); line-height:1.5; }
+
+@media (max-width:700px) {
+    .tdl-wa-panel-head { align-items:flex-start; flex-direction:column; }
+    .tdl-wa-select, .tdl-wa-btn { width:100%; }
+    .tdl-message-wrap label { display:block; }
+    .tdl-message-wrap label span { display:block; margin-top:3px; }
+}
+
 </style>
 
 </head>
@@ -4062,6 +4138,46 @@ tbody tr:hover {
 </div>
 </form>
 
+<!-- =========================================================
+     WHATSAPP BULK SELECTION TOOL
+     Browser-safe: one contact is opened at a time after a user click.
+     ========================================================= -->
+<div class="tdl-wa-panel" id="tdlWhatsAppPanel">
+    <div class="tdl-wa-panel-head">
+        <div>
+            <div class="tdl-wa-title">💬 WhatsApp Selection</div>
+            <div class="tdl-wa-subtitle">Select members from any group, then open them one-by-one in WhatsApp.</div>
+        </div>
+        <div class="tdl-selected-pill">Selected: <strong id="tdlSelectedCount">0</strong></div>
+    </div>
+
+    <div class="tdl-wa-controls">
+        <select id="tdlWaFilter" class="tdl-wa-select" onchange="tdlLiveSearch()">
+            <option value="all">All Members</option>
+            <option value="with_whatsapp">Only With WhatsApp</option>
+            <option value="without_whatsapp">Without WhatsApp</option>
+            <option value="selected">Selected Members</option>
+            <option value="unselected">Unselected Members</option>
+        </select>
+
+        <select id="tdlPersonTypeFilter" class="tdl-wa-select" onchange="tdlLiveSearch()">
+            <option value="all">All Person Types</option>
+            <option value="main">Main Persons Only</option>
+            <option value="non_main">Non-Main Persons</option>
+        </select>
+
+        <button type="button" class="tdl-wa-btn tdl-wa-btn-light" onclick="tdlSelectAllVisible()">☑ Select All Visible</button>
+        <button type="button" class="tdl-wa-btn tdl-wa-btn-light" onclick="tdlClearSelection()">☐ Clear Selection</button>
+        <button type="button" class="tdl-wa-btn tdl-wa-btn-green" onclick="tdlStartWhatsApp()">💬 Start WhatsApp</button>
+    </div>
+
+    <div class="tdl-message-wrap">
+        <label for="tdlWhatsAppMessage">Message <span>Optional — use <b>{{name}}</b>, <b>{{company}}</b>, <b>{{scheme}}</b>, <b>{{area}}</b></span></label>
+        <textarea id="tdlWhatsAppMessage" rows="2" placeholder="Example: Hello {{name}}, I wanted to share an update with you..."></textarea>
+    </div>
+
+    <div class="tdl-wa-status" id="tdlWhatsAppStatus">Select members from the table above.</div>
+</div>
 
 <!-- =========================================================
      GROUP CARD
@@ -4104,8 +4220,14 @@ tbody tr:hover {
 
                 <tr>
 
-                    <th>
-                        Group
+                    <th class="group-sort-header" title="Click to sort Group high to low / low to high">
+                        <a
+                            href="?group_sort=<?= $group_sort === 'asc' ? 'desc' : 'asc' ?>&star_filter=<?= e($star_filter) ?>&q=<?= e($_GET['q'] ?? '') ?>"
+                            style="display:flex;align-items:center;gap:4px;color:inherit;text-decoration:none;width:100%;height:100%;cursor:pointer;"
+                        >
+                            <span>Group</span>
+                            <span class="group-sort-icon"><?= $group_sort === 'asc' ? '↑' : '↓' ?></span>
+                        </a>
                     </th>
 
                     <th>
@@ -4169,1123 +4291,221 @@ tbody tr:hover {
 <?php else: ?>
 
 
-<?php foreach (
-    $groups as $group
-): ?>
-
+<?php foreach ($groups as $group): ?>
 
 <?php
-
-$gid =
-    $group['grp_id'];
-
-$searchText =
-    strtolower(
-        $gid .
-        ' ' .
-        $group['company_name'] .
-        ' ' .
-        $group['scheme_name'] .
-        ' ' .
-        implode(
-            ' ',
-            $group['relations']
-        ) .
-        ' ' .
-        implode(
-            ' ',
-            array_column(
-                $group['persons'],
-                'name'
-            )
-        )
-    );
-
+$gid = (int)$group['grp_id'];
+$searchParts = [
+    $gid,
+    $group['company_name'] ?? '',
+    $group['scheme_name'] ?? '',
+    implode(' ', $group['relations'] ?? []),
+    implode(' ', array_column($group['persons'] ?? [], 'name')),
+    $group['area'] ?? ''
+];
+$searchText = strtolower(implode(' ', $searchParts));
 ?>
 
+<tr
+    class="group-row"
+    data-group-id="<?= $gid ?>"
+    data-search="<?= e($searchText) ?>"
+    data-area="<?= e(strtolower((string)($group['area'] ?? ''))) ?>"
+>
+    <td><div class="group-id">#<?= $gid ?></div></td>
+    <td><div class="company"><?= e($group['company_name'] ?? '') ?></div></td>
 
-                <tr
-                    class="group-row"
-                    data-search="<?= e($searchText) ?>"
-                    data-area="<?= e(
-                        strtolower(
-                            $group['area']
-                        )
-                    ) ?>"
-                >
-
-                    <td>
-
-                        <div class="group-id">
-                            #<?= $gid ?>
-                        </div>
-
-                    </td>
-
-
-                    <td>
-
-                        <div class="company">
-                            <?= e(
-                                $group[
-                                    'company_name'
-                                ]
-                            ) ?>
-                        </div>
-
-                    </td>
-
-
-                    <!-- =================================================
-                         THIRD COLUMN - ALL RELATION
-                         ================================================= -->
-
-                    <td>
-
-                        <div class="line-list">
-
-<?php if (
-    !empty(
-        $group['relations']
-    )
-): ?>
-
-<?php foreach (
-    $group['relations']
-    as $relation
-): ?>
-
-                            <div
-                                class="line-item relation-item"
-                            >
-                                <?= e(
-                                    $relation
-                                ) ?>
-                            </div>
-
+    <td>
+        <div class="line-list">
+<?php if (!empty($group['relations'])): ?>
+<?php foreach ($group['relations'] as $relation): ?>
+            <div class="line-item relation-item"><?= e($relation) ?></div>
 <?php endforeach; ?>
-
 <?php else: ?>
-
-                            <div class="line-item">
-                                —
-                            </div>
-
+            <div class="line-item">—</div>
 <?php endif; ?>
+        </div>
+    </td>
 
-                        </div>
+    <td><div class="scheme"><?= e($group['scheme_name'] ?? '') ?></div></td>
 
-                    </td>
-
-
-                    <td>
-
-                        <div class="scheme">
-                            <?= e(
-                                $group[
-                                    'scheme_name'
-                                ]
-                            ) ?>
-                        </div>
-
-                    </td>
-
-
-                    <!-- =================================================
-                         ALL PERSONS
-                         ================================================= -->
-
-                    <td>
-
-                        <div class="line-list">
-
-<?php foreach (
-    $group['persons']
-    as $person
-): ?>
-
-                            <div class="line-item">
-                                <strong><?= e($person['name']) ?></strong>
-                                <?php
-                                $personNumbers = array_values(array_filter([
-                                    trim((string)($person['number1'] ?? '')),
-                                    trim((string)($person['number2'] ?? '')),
-                                    trim((string)($person['number3'] ?? ''))
-                                ], static function ($v) { return $v !== ''; }));
-                                ?>
-                                <?php if (!empty($personNumbers)): ?>
-                                    <div style="margin-top:3px;font-size:11px;line-height:1.35;">
-                                        <?php foreach ($personNumbers as $personNumber): ?>
-                                            <?php $waNumber = preg_replace('/[^0-9]/', '', (string)$personNumber); ?>
-                                            <?php if ($waNumber !== ''): ?>
-                                                <a href="https://wa.me/+91<?= e($waNumber) ?>" target="_blank" rel="noopener noreferrer" style="color:#159957;text-decoration:none;font-weight:700;display:inline-block;margin-right:7px;" title="Open WhatsApp"><?= e($personNumber) ?></a>
-                                            <?php else: ?>
-                                                <span style="display:inline-block;margin-right:7px;"><?= e($personNumber) ?></span>
-                                            <?php endif; ?>
-                                        <?php endforeach; ?>
-                                    </div>
-                                <?php endif; ?>
-                            </div>
-
-<?php endforeach; ?>
-
-                        </div>
-
-                    </td>
-
-
-                    <!-- =================================================
-                         MAIN PERSONS
-                         ================================================= -->
-
-                    <td>
-
-                        <div class="line-list">
-
-<?php if (
-    !empty(
-        $group[
-            'main_persons'
-        ]
-    )
-): ?>
-
-<?php foreach (
-    $group[
-        'main_persons'
-    ] as $mainPerson
-): ?>
-
-                            <?php
-                            $mainMatch = null;
-                            foreach ($group['persons'] as $person) {
-                                if (strcasecmp(trim((string)($person['name'] ?? '')), trim((string)$mainPerson)) === 0
-                                    && trim((string)($person['main'] ?? '')) === 'main') {
-                                    $mainMatch = $person;
-                                    break;
-                                }
-                            }
-                            ?>
-                            <div class="line-item main">
-                                <strong><?= e($mainPerson) ?></strong>
-                                <?php if ($mainMatch): ?>
-                                    <?php
-                                    $mainNumbers = array_values(array_filter([
-                                        trim((string)($mainMatch['number1'] ?? '')),
-                                        trim((string)($mainMatch['number2'] ?? '')),
-                                        trim((string)($mainMatch['number3'] ?? ''))
-                                    ], static function ($v) { return $v !== ''; }));
-                                    ?>
-                                    <?php if (!empty($mainNumbers)): ?>
-                                        <div style="margin-top:3px;font-size:11px;line-height:1.35;">
-                                            <?php foreach ($mainNumbers as $mainNumber): ?>
-                                                <?php $mainWaNumber = preg_replace('/[^0-9]/', '', (string)$mainNumber); ?>
-                                                <?php if ($mainWaNumber !== ''): ?>
-                                                    <a href="https://wa.me/+91<?= e($mainWaNumber) ?>" target="_blank" rel="noopener noreferrer" style="color:#159957;text-decoration:none;font-weight:700;display:inline-block;margin-right:7px;" title="Open WhatsApp"><?= e($mainNumber) ?></a>
-                                                <?php else: ?>
-                                                    <span style="display:inline-block;margin-right:7px;"><?= e($mainNumber) ?></span>
-                                                <?php endif; ?>
-                                            <?php endforeach; ?>
-                                        </div>
-                                    <?php endif; ?>
-                                <?php endif; ?>
-                            </div>
-
-<?php endforeach; ?>
-
-<?php else: ?>
-
-                            <div class="line-item">
-                                —
-                            </div>
-
-<?php endif; ?>
-
-                        </div>
-
-                    </td>
-
-
-                    <!-- =================================================
-                         AREA
-                         ================================================= -->
-
-                    <td>
-
-                        <div class="area-list">
-
+    <td>
+        <div class="line-list">
+<?php foreach (($group['persons'] ?? []) as $person): ?>
 <?php
+$tdlPersonId = (int)($person['id'] ?? 0);
+$tdlPersonName = trim((string)($person['name'] ?? ''));
+$tdlPersonMain = trim((string)($person['main'] ?? '')) === 'main';
+$tdlPersonNumbers = array_values(array_filter([
+    trim((string)($person['number1'] ?? '')),
+    trim((string)($person['number2'] ?? '')),
+    trim((string)($person['number3'] ?? ''))
+], static function ($v) { return $v !== ''; }));
+$tdlWhatsAppNumber = '';
+foreach ($tdlPersonNumbers as $tdlCandidateNumber) {
+    $tdlCleanCandidate = preg_replace('/[^0-9]/', '', $tdlCandidateNumber);
+    if ($tdlCleanCandidate !== '') {
+        $tdlWhatsAppNumber = $tdlCleanCandidate;
+        break;
+    }
+}
+$tdlPersonSearch = strtolower(implode(' ', [
+    $tdlPersonName,
+    $person['company_name'] ?? '',
+    $person['scheme_name'] ?? '',
+    $person['relation1'] ?? '',
+    $person['relation2'] ?? '',
+    $person['relation_all'] ?? ''
+]));
+?>
+            <div
+                class="line-item tdl-person-item"
+                data-person-id="<?= $tdlPersonId ?>"
+                data-person-name="<?= e($tdlPersonName) ?>"
+                data-person-search="<?= e($tdlPersonSearch) ?>"
+                data-person-main="<?= $tdlPersonMain ? '1' : '0' ?>"
+                data-whatsapp="<?= e($tdlWhatsAppNumber) ?>"
+            >
+                <div class="tdl-person-head">
+                    <label class="tdl-person-select-label" title="Select this member for WhatsApp">
+                        <input
+                            type="checkbox"
+                            class="tdl-person-checkbox"
+                            data-person-id="<?= $tdlPersonId ?>"
+                            data-group-id="<?= $gid ?>"
+                            data-name="<?= e($tdlPersonName) ?>"
+                            data-main="<?= $tdlPersonMain ? '1' : '0' ?>"
+                            data-whatsapp="<?= e($tdlWhatsAppNumber) ?>"
+                            onchange="tdlSelectionChanged(this)"
+                            <?= $tdlWhatsAppNumber === '' ? 'data-no-whatsapp="1"' : '' ?>
+                        >
+                        <span class="tdl-checkmark"></span>
+                    </label>
+                    <strong><?= e($person['name'] ?? '') ?></strong>
+                    <?php if ($tdlWhatsAppNumber !== ''): ?>
+                        <span class="tdl-wa-ready" title="WhatsApp number available">WA</span>
+                    <?php else: ?>
+                        <span class="tdl-wa-missing" title="No usable WhatsApp number">No WA</span>
+                    <?php endif; ?>
+                </div>
+<?php
+$personNumbers = array_values(array_filter([
+    trim((string)($person['number1'] ?? '')),
+    trim((string)($person['number2'] ?? '')),
+    trim((string)($person['number3'] ?? ''))
+], static function ($v) { return $v !== ''; }));
+?>
+<?php if (!empty($personNumbers)): ?>
+                <div style="margin-top:3px;font-size:11px;line-height:1.35;">
+<?php foreach ($personNumbers as $personNumber): ?>
+<?php $waNumber = preg_replace('/[^0-9]/', '', (string)$personNumber); ?>
+<?php if ($waNumber !== ''): ?>
+                    <a href="https://wa.me/<?= e($waNumber) ?>" target="_blank" rel="noopener noreferrer" style="color:#159957;text-decoration:none;font-weight:700;display:inline-block;margin-right:7px;" title="Open WhatsApp"><?= e($personNumber) ?></a>
+<?php else: ?>
+                    <span style="display:inline-block;margin-right:7px;"><?= e($personNumber) ?></span>
+<?php endif; ?>
+<?php endforeach; ?>
+                </div>
+<?php endif; ?>
+            </div>
+<?php endforeach; ?>
+        </div>
+    </td>
 
-$displayAreas =
-    preg_split(
-        '/\s*,\s*/',
-        $group['area']
-    );
-
-foreach (
-    $displayAreas
-    as $oneArea
-):
-
-if (
-    trim($oneArea) === ''
-) {
-    continue;
+    <td>
+        <div class="line-list">
+<?php if (!empty($group['main_persons'])): ?>
+<?php foreach ($group['main_persons'] as $mainPerson): ?>
+<?php
+$mainMatch = null;
+foreach (($group['persons'] ?? []) as $mainPersonRow) {
+    if (
+        strcasecmp(
+            trim((string)($mainPersonRow['name'] ?? '')),
+            trim((string)$mainPerson)
+        ) === 0
+        && trim((string)($mainPersonRow['main'] ?? '')) === 'main'
+    ) {
+        $mainMatch = $mainPersonRow;
+        break;
+    }
 }
 
+$mainNumbers = $mainMatch
+    ? array_values(array_filter([
+        trim((string)($mainMatch['number1'] ?? '')),
+        trim((string)($mainMatch['number2'] ?? '')),
+        trim((string)($mainMatch['number3'] ?? ''))
+    ], static function ($v) {
+        return $v !== '';
+    }))
+    : [];
 ?>
+            <div class="line-item main">
+                <strong><?= e($mainPerson) ?></strong>
 
-                            <span
-                                class="area-badge"
-                            >
-                                <?= e(
-                                    ucwords(
-                                        trim(
-                                            $oneArea
-                                        )
-                                    )
-                                ) ?>
-                            </span>
-
+<?php if (!empty($mainNumbers)): ?>
+                <div style="margin-top:3px;font-size:11px;line-height:1.35;">
+<?php foreach ($mainNumbers as $mainNumber): ?>
+<?php $mainWaNumber = preg_replace('/[^0-9]/', '', (string)$mainNumber); ?>
+<?php if ($mainWaNumber !== ''): ?>
+                    <a
+                        href="https://wa.me/<?= e($mainWaNumber) ?>"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style="color:#159957;text-decoration:none;font-weight:700;display:inline-block;margin-right:7px;"
+                        title="Open WhatsApp"
+                    ><?= e($mainNumber) ?></a>
+<?php else: ?>
+                    <span style="display:inline-block;margin-right:7px;"><?= e($mainNumber) ?></span>
+<?php endif; ?>
 <?php endforeach; ?>
-
-                        </div>
-
-                    </td>
-
-
-                    <!-- =================================================
-                         ACTIONS
-                         ================================================= -->
-
-                    <td>
-
-                        <div class="actions">
-
-                            <form
-                                method="POST"
-                                style="display:inline"
-                            >
-                                <input
-                                    type="hidden"
-                                    name="grp_id"
-                                    value="<?= $gid ?>"
-                                >
-
-                                <input
-                                    type="hidden"
-                                    name="star_action"
-                                    value="<?= !empty($group['is_starred']) ? 'unstar' : 'star' ?>"
-                                >
-
-                                <button
-                                    type="submit"
-                                    class="btn btn-star <?= !empty($group['is_starred']) ? 'starred' : '' ?>"
-                                    title="<?= !empty($group['is_starred']) ? 'Remove star' : 'Star this group' ?>"
-                                >
-                                    <?= !empty($group['is_starred']) ? '★ Starred' : '☆ Star' ?>
-                                </button>
-                            </form>
-
-                            <button
-                                type="button"
-                                class="btn btn-view"
-                                onclick="toggleDetails(<?= $gid ?>)"
-                            >
-                                👁 View
-                            </button>
-
-
-                            <button
-                                type="button"
-                                class="btn btn-edit"
-                                onclick="toggleDetails(<?= $gid ?>, true)"
-                            >
-                                ✎ Edit
-                            </button>
-
-
-                            <form
-                                method="POST"
-                                style="display:inline"
-                                onsubmit="return confirmDeleteGroup(<?= $gid ?>);"
-                            >
-
-                                <input
-                                    type="hidden"
-                                    name="grp_id"
-                                    value="<?= $gid ?>"
-                                >
-
-                                <button
-                                    type="submit"
-                                    name="delete_group"
-                                    value="1"
-                                    class="btn btn-delete"
-                                >
-                                    🗑 Delete
-                                </button>
-
-                            </form>
-
-                        </div>
-
-                    </td>
-
-                </tr>
-
-
-                <!-- =====================================================
-                     DETAILS
-                     ===================================================== -->
-
-                <tr
-                    class="details-row"
-                    id="details-<?= $gid ?>"
-                >
-
-                    <td
-                        colspan="8"
-                    >
-
-                        <div class="details-content">
-
-                            <div class="details-toolbar">
-    <div class="details-toolbar-title">
-        <span class="details-toolbar-icon">◆</span>
-        <div>
-            <strong>Group Details</strong>
-            <small>View, edit people, or update group information</small>
+                </div>
+<?php endif; ?>
+            </div>
+<?php endforeach; ?>
+<?php else: ?>
+            <div class="line-item">—</div>
+<?php endif; ?>
         </div>
-    </div>
-    <button type="button" class="btn btn-close-details"
-            onclick="closeDetails(<?= $gid ?>)">✕ Close</button>
-</div>
-
-
-
-
-                            <!-- =================================================
-                                 GROUP EDIT
-                                 ================================================= -->
-
-                            <div
-                                class="details-panel"
-                                id="group-edit-<?= $gid ?>"
-                                style="display:none"
-                            >
-
-                                <div class="panel-title">
-                                    ✎ Edit Group #<?= $gid ?>
-                                </div>
-
-                                <div class="panel-body">
-
-                                    <form
-                                        method="POST"
-                                        id="group-save-form-<?= $gid ?>"
-                                        onsubmit="return prepareGroupSave(<?= $gid ?>, this);"
-                                    >
-
-                                        <input
-                                            type="hidden"
-                                            name="grp_id"
-                                            value="<?= $gid ?>"
-                                        >
-
-
-                                        <div class="group-edit">
-
-
-                                            <div class="field">
-
-                                                <label>
-                                                    Company Name
-                                                </label>
-
-                                                <input
-                                                    type="text"
-                                                    name="company_name"
-                                                    value="<?= e(
-                                                        $group[
-                                                            'company_name'
-                                                        ]
-                                                    ) ?>"
-                                                    required
-                                                >
-
-                                            </div>
-
-
-                                            <div class="field">
-
-                                                <label>
-                                                    Scheme Name
-                                                </label>
-
-                                                <input
-                                                    type="text"
-                                                    name="scheme_name"
-                                                    value="<?= e(
-                                                        $group[
-                                                            'scheme_name'
-                                                        ]
-                                                    ) ?>"
-                                                    required
-                                                >
-
-                                            </div>
-
-
-                                            <div
-                                                class="area-checks"
-                                            >
-
-<?php
-
-$currentAreas = preg_split(
-    '/\s*,\s*/',
-    (string)($group['area'] ?? '')
-);
-
-$currentAreasNormalized = array_map(
-    static function ($value) {
-        return strtolower(trim((string)$value));
-    },
-    $currentAreas ?: []
-);
-
-?>
-
-<?php foreach (
-    $area_options
-    as $area
-): ?>
-
-                                                <div
-                                                    class="area-check"
-                                                >
-
-                                                    <input
-                                                        type="checkbox"
-                                                        id="edit_<?= $gid ?>_<?= md5($area) ?>"
-                                                        name="areas[]"
-                                                        value="<?= e($area) ?>"
-                                                        <?= in_array(
-                                                            strtolower(trim((string)$area)),
-                                                            $currentAreasNormalized,
-                                                            true
-                                                        )
-                                                            ? 'checked'
-                                                            : ''
-                                                        ?>
-                                                    >
-
-                                                    <label
-                                                        for="edit_<?= $gid ?>_<?= md5($area) ?>"
-                                                    >
-                                                        <?= e(
-                                                            ucwords($area)
-                                                        ) ?>
-                                                    </label>
-
-                                                </div>
-
-<?php endforeach; ?>
-
-                                            </div>
-
-                                        </div>
-
-
-                                        <div
-                                            style="margin-top:15px;display:flex;gap:8px"
-                                        >
-
-                                            <button
-                                                type="submit"
-                                                name="update_group"
-                                                value="1"
-                                                class="btn btn-save">
-                                                ✓ Save Group
-                                            </button>
-
-                                            <button
-                                                type="button"
-                                                class="btn btn-cancel"
-                                                onclick="toggleEdit(<?= $gid ?>, false)"
-                                            >
-                                                Cancel
-                                            </button>
-
-                                            <button
-                                                type="button"
-                                                class="btn btn-close-details"
-                                                onclick="closeDetails(<?= $gid ?>)"
-                                            >
-                                                ✕ Close Details
-                                            </button>
-
-                                        </div>
-
-                                    </form>
-
-                                </div>
-
-                            </div>
-
-
-                            <!-- =================================================
-                                 PERSONS
-                                 ================================================= -->
-
-                            <div
-                                class="details-panel"
-                                style="margin-top:18px"
-                            >
-
-                                <div class="panel-title">
-
-                                    👥
-                                    All Persons
-                                    —
-                                    <?= count(
-                                        $group['persons']
-                                    ) ?>
-
-                                </div>
-
-
-                                <div class="panel-body">
-
-                                    <?php foreach ($group['persons'] as $personForm): ?>
-                                        <form
-                                            id="person-form-<?= (int)$personForm['id'] ?>"
-                                            method="POST"
-                                            style="display:none"
-                                        >
-                                            <input type="hidden" name="id" value="<?= (int)$personForm['id'] ?>">
-                                            <input type="hidden" name="grp_id" value="<?= (int)$gid ?>">
-                                        </form>
-                                    <?php endforeach; ?>
-
-                                    <div
-                                        class="person-table-wrap"
-                                    >
-
-                                        <table
-                                            class="person-table"
-                                        >
-
-                                            <thead>
-
-                                                <tr>
-
-                                                    <th>
-                                                        #
-                                                    </th>
-
-                                                    <th>
-                                                        Name
-                                                    </th>
-
-                                                    <th>
-                                                        Number 1
-                                                    </th>
-
-                                                    <th>
-                                                        Number 2
-                                                    </th>
-
-                                                    <th>
-                                                        Number 3
-                                                    </th>
-
-                                                    <th>
-                                                        Relation 1
-                                                    </th>
-
-                                                    <th>
-                                                        Relation 2
-                                                    </th>
-
-                                                    <th>
-                                                        All Relation
-                                                    </th>
-
-                                                    <th>
-                                                        Main
-                                                    </th>
-
-                                                    <th>
-                                                        Action
-                                                    </th>
-
-                                                </tr>
-
-                                            </thead>
-
-
-                                            <tbody>
-
-
-<?php
-
-$personNo =
-    1;
-
-foreach (
-    $group['persons']
-    as $person
-):
-
-?>
-
-
-                                                <tr
-                                                    class="<?= trim(
-                                                        $person['main']
-                                                    ) === 'main'
-                                                        ? 'main-person-row'
-                                                        : ''
-                                                    ?>"
-                                                    data-person-id="<?= (int)$person['id'] ?>"
-                                                >
-
-
-                                                        <td>
-                                                            <?= $personNo ?>
-                                                        </td>
-
-                                                        <td>
-
-                                                            <input
-                                                                class="person-input person-name"
-                                                                type="text"
-                                                                name="name" data-field="name" form="person-form-<?= (int)$person['id'] ?>"
-                                                                value="<?= e(
-                                                                    $person[
-                                                                        'name'
-                                                                    ]
-                                                                ) ?>"
-                                                                required
-                                                            >
-
-                                                        </td>
-
-
-                                                        <td>
-
-                                                            <input
-                                                                class="person-input"
-                                                                type="text"
-                                                                name="number1" data-field="number1" form="person-form-<?= (int)$person['id'] ?>"
-                                                                value="<?= e(
-                                                                    $person[
-                                                                        'number1'
-                                                                    ]
-                                                                ) ?>"
-                                                            >
-
-                                                        </td>
-
-
-                                                        <td>
-
-                                                            <input
-                                                                class="person-input"
-                                                                type="text"
-                                                                name="number2" data-field="number2" form="person-form-<?= (int)$person['id'] ?>"
-                                                                value="<?= e(
-                                                                    $person[
-                                                                        'number2'
-                                                                    ]
-                                                                ) ?>"
-                                                            >
-
-                                                        </td>
-
-
-                                                        <td>
-
-                                                            <input
-                                                                class="person-input"
-                                                                type="text"
-                                                                name="number3" data-field="number3" form="person-form-<?= (int)$person['id'] ?>"
-                                                                value="<?= e(
-                                                                    $person[
-                                                                        'number3'
-                                                                    ]
-                                                                ) ?>"
-                                                            >
-
-                                                        </td>
-
-
-                                                        <td>
-
-                                                            <input
-                                                                class="person-input"
-                                                                type="text"
-                                                                name="relation1" data-field="relation1" form="person-form-<?= (int)$person['id'] ?>"
-                                                                value="<?= e(
-                                                                    $person[
-                                                                        'relation1'
-                                                                    ]
-                                                                ) ?>"
-                                                            >
-
-                                                        </td>
-
-
-                                                        <td>
-
-                                                            <input
-                                                                class="person-input"
-                                                                type="text"
-                                                                name="relation2" data-field="relation2" form="person-form-<?= (int)$person['id'] ?>"
-                                                                value="<?= e(
-                                                                    $person[
-                                                                        'relation2'
-                                                                    ]
-                                                                ) ?>"
-                                                            >
-
-                                                        </td>
-
-
-                                                        <td>
-
-                                                            <input
-                                                                class="person-input"
-                                                                type="text"
-                                                                value="<?= e(
-                                                                    $person[
-                                                                        'relation_all'
-                                                                    ]
-                                                                ) ?>"
-                                                                readonly
-                                                            >
-
-                                                        </td>
-
-
-                                                        <td>
-
-                                                            <select
-                                                                name="main" data-field="main" form="person-form-<?= (int)$person['id'] ?>"
-                                                                class="main-select"
-                                                            >
-
-                                                                <option
-                                                                    value=""
-                                                                    <?= trim(
-                                                                        $person[
-                                                                            'main'
-                                                                        ]
-                                                                    ) === ''
-                                                                        ? 'selected'
-                                                                        : ''
-                                                                    ?>
-                                                                >
-                                                                    —
-                                                                </option>
-
-                                                                <option
-                                                                    value="main"
-                                                                    <?= trim(
-                                                                        $person[
-                                                                            'main'
-                                                                        ]
-                                                                    ) === 'main'
-                                                                        ? 'selected'
-                                                                        : ''
-                                                                    ?>
-                                                                >
-                                                                    Main
-                                                                </option>
-
-                                                            </select>
-
-                                                        </td>
-
-
-                                                        <td>
-
-                                                            <button
-                                                                type="submit"
-                                                                name="update_person"
-                                                                value="1"
-                                                                form="person-form-<?= (int)$person['id'] ?>"
-                                                                class="btn btn-save"
-                                                            >
-                                                                Save
-                                                            </button>
-
-
-                                                            <button
-                                                                type="submit"
-                                                                name="delete_person"
-                                                                value="1"
-                                                                form="person-form-<?= (int)$person['id'] ?>"
-                                                                class="btn btn-delete"
-                                                                onclick="return confirm('Delete this person from Group #<?= $gid ?>?');"
-                                                            >
-                                                                Delete
-                                                            </button>
-
-                                                        </td>
-
-                                                </tr>
-
-
-<?php
-
-$personNo++;
-
-endforeach;
-
-?>
-
-
-                                            </tbody>
-
-                                        </table>
-
-                                    </div>
-
-
-                                    <!-- =================================================
-                                         ADD PERSON
-                                         ================================================= -->
-
-                                    <div class="add-person">
-
-                                        <div
-                                            style="font-weight:800;color:var(--navy);font-size:13px;margin-bottom:11px"
-                                        >
-                                            + Add Person to Group #<?= $gid ?>
-                                        </div>
-
-
-                                        <form
-                                            method="POST"
-                                        >
-
-                                            <input
-                                                type="hidden"
-                                                name="grp_id"
-                                                value="<?= $gid ?>"
-                                            >
-
-
-                                            <div
-                                                class="add-person-grid"
-                                            >
-
-                                                <input
-                                                    type="text"
-                                                    name="new_name"
-                                                    placeholder="Name"
-                                                    required
-                                                >
-
-                                                <input
-                                                    type="text"
-                                                    name="new_number1"
-                                                    placeholder="Number 1"
-                                                >
-
-                                                <input
-                                                    type="text"
-                                                    name="new_number2"
-                                                    placeholder="Number 2"
-                                                >
-
-                                                <input
-                                                    type="text"
-                                                    name="new_number3"
-                                                    placeholder="Number 3"
-                                                >
-
-                                                <input
-                                                    type="text"
-                                                    name="new_relation1"
-                                                    placeholder="Relation 1"
-                                                >
-
-                                                <input
-                                                    type="text"
-                                                    name="new_relation2"
-                                                    placeholder="Relation 2"
-                                                >
-
-                                                <select
-                                                    name="new_main"
-                                                >
-
-                                                    <option
-                                                        value=""
-                                                    >
-                                                        Not Main
-                                                    </option>
-
-                                                    <option
-                                                        value="main"
-                                                    >
-                                                        Main
-                                                    </option>
-
-                                                </select>
-
-                                            </div>
-
-
-                                            <div
-                                                style="margin-top:10px"
-                                            >
-
-                                                <button
-                                                    type="submit"
-                                                    name="add_person"
-                                                    value="1"
-                                                    class="btn btn-add"
-                                                >
-                                                    + Add Person
-                                                </button>
-
-                                            </div>
-
-                                        </form>
-
-                                    </div>
-
-                                </div>
-
-                            </div>
-
-
-                            <!-- =================================================
-                                 MAIN PERSON PANEL
-                                 ================================================= -->
-
-                            <div
-                                class="details-grid"
-                                style="margin-top:18px"
-                            >
-
-                                <div
-                                    class="details-panel"
-                                >
-
-                                    <div class="panel-title">
-                                        ★ Main Persons
-                                    </div>
-
-                                    <div class="panel-body">
-
-<?php if (
-    !empty(
-        $group[
-            'main_persons'
-        ]
-    )
-): ?>
-
-                                        <div class="line-list">
-
-<?php foreach (
-    $group[
-        'main_persons'
-    ] as $mainPerson
-): ?>
-
-                                            <div
-                                                class="line-item main"
-                                            >
-                                                ★
-                                                <?= e(
-                                                    $mainPerson
-                                                ) ?>
-                                            </div>
-
-<?php endforeach; ?>
-
-                                        </div>
-
-<?php else: ?>
-
-                                        <div
-                                            style="color:var(--muted)"
-                                        >
-                                            No main person selected.
-                                        </div>
-
+    </td>
+
+    <td>
+        <div class="area-list">
+<?php foreach (preg_split('/\s*,\s*/', (string)($group['area'] ?? '')) as $oneArea): ?>
+<?php if (trim($oneArea) !== ''): ?>
+            <span class="area-badge"><?= e(ucwords(trim($oneArea))) ?></span>
 <?php endif; ?>
-
-                                    </div>
-
-                                </div>
-
-
-                                <div
-                                    class="details-panel"
-                                >
-
-                                    <div class="panel-title">
-                                        🔗 All Relation
-                                    </div>
-
-                                    <div class="panel-body">
-
-<?php if (
-    !empty(
-        $group['relations']
-    )
-): ?>
-
-                                        <div class="line-list">
-
-<?php foreach (
-    $group['relations']
-    as $relation
-): ?>
-
-                                            <div
-                                                class="line-item relation-item"
-                                            >
-                                                <?= e(
-                                                    $relation
-                                                ) ?>
-                                            </div>
-
 <?php endforeach; ?>
+        </div>
+    </td>
 
-                                        </div>
+    <td>
+        <div class="actions">
+            <form method="POST" style="display:inline">
+                <input type="hidden" name="grp_id" value="<?= $gid ?>">
+                <input type="hidden" name="star_action" value="<?= !empty($group['is_starred']) ? 'unstar' : 'star' ?>">
+                <button type="submit" class="btn btn-star <?= !empty($group['is_starred']) ? 'starred' : '' ?>" title="<?= !empty($group['is_starred']) ? 'Remove star' : 'Star this group' ?>">
+                    <?= !empty($group['is_starred']) ? '★ Starred' : '☆ Star' ?>
+                </button>
+            </form>
+            <button type="button" class="btn btn-view" onclick="toggleDetails(<?= $gid ?>)">👁 View</button>
+            <button type="button" class="btn btn-edit" onclick="toggleDetails(<?= $gid ?>, true)">✎ Edit</button>
+            <form method="POST" style="display:inline" onsubmit="return confirmDeleteGroup(<?= $gid ?>);">
+                <input type="hidden" name="grp_id" value="<?= $gid ?>">
+                <button type="submit" name="delete_group" value="1" class="btn btn-delete">🗑 Delete</button>
+            </form>
+        </div>
+    </td>
+</tr>
 
-<?php else: ?>
-
-                                        <div
-                                            style="color:var(--muted)"
-                                        >
-                                            No relation history.
-                                        </div>
-
-<?php endif; ?>
-
-                                    </div>
-
-                                </div>
-
-                            </div>
-
-
-                        </div>
-
-                    </td>
-
-                </tr>
-
+<tr class="details-row" id="details-<?= $gid ?>">
+    <td colspan="8">
+        <div class="details-content" id="details-content-<?= $gid ?>">
+            <div style="padding:22px;text-align:center;color:var(--muted)">Loading details…</div>
+        </div>
+    </td>
+</tr>
 
 <?php endforeach; ?>
 
@@ -5313,10 +4533,43 @@ endforeach;
 </div>
 
 
+
+
+<!-- =========================================================
+     WHATSAPP CONTACT-BY-CONTACT MODAL
+     ========================================================= -->
+<div class="tdl-wa-modal" id="tdlWaModal" aria-hidden="true">
+    <div class="tdl-wa-dialog" role="dialog" aria-modal="true" aria-labelledby="tdlWaModalTitle">
+        <div class="tdl-wa-dialog-head">
+            <strong id="tdlWaModalTitle">WhatsApp Contacts</strong>
+            <button type="button" class="tdl-wa-close" onclick="tdlCloseWhatsApp()">×</button>
+        </div>
+        <div class="tdl-wa-dialog-body">
+            <div class="tdl-wa-progress"><div id="tdlWaProgressBar"></div></div>
+            <div id="tdlWaContactCard" class="tdl-wa-contact"></div>
+            <div class="tdl-wa-dialog-actions">
+                <button type="button" class="tdl-wa-open-btn" onclick="tdlOpenCurrentWhatsApp()">💬 Open WhatsApp</button>
+                <button type="button" class="tdl-wa-next-btn" onclick="tdlNextWhatsApp()">Next Contact →</button>
+                <button type="button" class="tdl-wa-skip-btn" onclick="tdlSkipWhatsApp()">Skip</button>
+            </div>
+            <div class="tdl-wa-dialog-note">
+                Your browser may block scripts from opening many WhatsApp tabs automatically. This workflow deliberately opens one contact per user click so it remains reliable.
+            </div>
+        </div>
+    </div>
+</div>
+
 </main>
 
 
 <script>
+
+/*
+ * Full area list is transferred to the browser ONCE.
+ * Edit forms build their checkboxes only when opened.
+ * This removes the largest repeated HTML block from initial page load.
+ */
+window.tdlAreaOptions = <?= json_encode(array_values($area_options), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
 
 
 /* =========================================================
@@ -5568,39 +4821,110 @@ function tdlLiveSearch() {
     tdlApplyHighlights(query);
 }
 
-/* Area filter should also update immediately. */
-document.addEventListener('DOMContentLoaded', function() {
-    tdlUpdateAreaButton();
-
-    document.addEventListener('click', function(event) {
-        var wrap = document.getElementById('areaSelectWrap');
-        if (wrap && !wrap.contains(event.target)) {
-            wrap.classList.remove('open');
-        }
-    });
-
-    /* If browser restored a previous search value, apply it once. */
-    tdlLiveSearch();
-});
-
-
 /* =========================================================
-   VIEW DETAILS
+   GROUP COLUMN SORT
+   Sorting is handled by PHP/SQL so it cannot interfere with
+   any other JavaScript functionality on this page.
    ========================================================= */
 
-function toggleDetails(
-    grpId,
-    editMode = false
-)
-{
-    const details =
-        document.getElementById(
-            'details-' + grpId
-        );
+/* =========================================================
+   LAZY GROUP DETAILS
+   Details are NOT rendered during initial page load.
+   They are fetched only when View/Edit is clicked.
+   ========================================================= */
 
-    if (!details) {
-        return;
-    }
+var tdlDetailsCache = {};
+
+function tdlEscapeHtml(value) {
+    return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+function tdlWaHtml(number) {
+    var raw = String(number == null ? '' : number).trim();
+    if (!raw) return '';
+    var wa = raw.replace(/[^0-9]/g, '');
+    if (!wa) return '<span>' + tdlEscapeHtml(raw) + '</span>';
+    return '<a href="https://wa.me/' + encodeURIComponent(wa) + '" target="_blank" rel="noopener noreferrer" style="color:#159957;text-decoration:none;font-weight:700;display:inline-block;margin-right:7px" title="Open WhatsApp">' + tdlEscapeHtml(raw) + '</a>';
+}
+
+function tdlNumbersHtml(person) {
+    var numbers = [person.number1, person.number2, person.number3].filter(function(v){ return String(v || '').trim() !== ''; });
+    if (!numbers.length) return '';
+    return '<div style="margin-top:3px;font-size:11px;line-height:1.35">' + numbers.map(tdlWaHtml).join('') + '</div>';
+}
+
+function tdlBuildDetailsHtml(data, editMode) {
+    var gid = Number(data.group.grp_id);
+    var group = data.group;
+    var persons = data.persons || [];
+    var areas = String(group.area || '').split(',').map(function(v){ return v.trim().toLowerCase(); }).filter(Boolean);
+
+    var html = '';
+    html += '<div class="details-toolbar">';
+    html += '<div class="details-toolbar-title"><span class="details-toolbar-icon">◆</span><div><strong>Group Details</strong><small>View, edit people, or update group information</small></div></div>';
+    html += '<button type="button" class="btn btn-close-details" onclick="closeDetails(' + gid + ')">✕ Close</button>';
+    html += '</div>';
+
+    html += '<div class="details-panel" id="group-edit-' + gid + '" style="display:' + (editMode ? 'block' : 'none') + '">';
+    html += '<div class="panel-title">✎ Edit Group #' + gid + '</div><div class="panel-body">';
+    html += '<form method="POST" id="group-save-form-' + gid + '" onsubmit="return prepareGroupSave(' + gid + ', this);">';
+    html += '<input type="hidden" name="grp_id" value="' + gid + '">';
+    html += '<div class="group-edit">';
+    html += '<div class="field"><label>Company Name</label><input type="text" name="company_name" value="' + tdlEscapeHtml(group.company_name || '') + '" required></div>';
+    html += '<div class="field"><label>Scheme Name</label><input type="text" name="scheme_name" value="' + tdlEscapeHtml(group.scheme_name || '') + '" required></div>';
+    html += '<div class="area-checks">';
+    (window.tdlAreaOptions || []).forEach(function(area, index) {
+        var checked = areas.indexOf(String(area).trim().toLowerCase()) !== -1 ? ' checked' : '';
+        var id = 'edit_' + gid + '_' + index;
+        html += '<div class="area-check"><input type="checkbox" id="' + id + '" name="areas[]" value="' + tdlEscapeHtml(area) + '"' + checked + '><label for="' + id + '">' + tdlEscapeHtml(String(area).replace(/\b\w/g,function(c){return c.toUpperCase();})) + '</label></div>';
+    });
+    html += '</div></div>';
+    html += '<div style="margin-top:15px;display:flex;gap:8px"><button type="submit" name="update_group" value="1" class="btn btn-save">✓ Save Group</button><button type="button" class="btn btn-cancel" onclick="toggleEdit(' + gid + ', false)">Cancel</button><button type="button" class="btn btn-close-details" onclick="closeDetails(' + gid + ')">✕ Close Details</button></div>';
+    html += '</form></div></div>';
+
+    html += '<div class="details-panel" style="margin-top:18px"><div class="panel-title">👥 All Persons — ' + persons.length + '</div><div class="panel-body">';
+    persons.forEach(function(p) {
+        var pid = Number(p.id);
+        html += '<form id="person-form-' + pid + '" method="POST" style="display:none"><input type="hidden" name="id" value="' + pid + '"><input type="hidden" name="grp_id" value="' + gid + '"></form>';
+    });
+    html += '<div class="person-table-wrap"><table class="person-table"><thead><tr><th>#</th><th>Name</th><th>Number 1</th><th>Number 2</th><th>Number 3</th><th>Relation 1</th><th>Relation 2</th><th>All Relation</th><th>Main</th><th>Action</th></tr></thead><tbody>';
+    persons.forEach(function(p, i) {
+        var pid = Number(p.id);
+        var main = String(p.main || '').trim() === 'main';
+        html += '<tr class="' + (main ? 'main-person-row' : '') + '" data-person-id="' + pid + '">';
+        html += '<td>' + (i + 1) + '</td>';
+        [['name',p.name],['number1',p.number1],['number2',p.number2],['number3',p.number3],['relation1',p.relation1],['relation2',p.relation2]].forEach(function(pair){
+            html += '<td><input class="person-input ' + (pair[0] === 'name' ? 'person-name' : '') + '" type="text" name="' + pair[0] + '" data-field="' + pair[0] + '" form="person-form-' + pid + '" value="' + tdlEscapeHtml(pair[1] || '') + '"' + (pair[0] === 'name' ? ' required' : '') + '></td>';
+        });
+        html += '<td><input class="person-input" type="text" value="' + tdlEscapeHtml(p.relation_all || '') + '" readonly></td>';
+        html += '<td><select name="main" data-field="main" form="person-form-' + pid + '" class="main-select"><option value=""' + (!main ? ' selected' : '') + '>—</option><option value="main"' + (main ? ' selected' : '') + '>Main</option></select></td>';
+        html += '<td><button type="submit" name="update_person" value="1" form="person-form-' + pid + '" class="btn btn-save">Save</button> <button type="submit" name="delete_person" value="1" form="person-form-' + pid + '" class="btn btn-delete" onclick="return confirm(\'Delete this person from Group #' + gid + '?\');">Delete</button></td>';
+        html += '</tr>';
+    });
+    html += '</tbody></table></div>';
+    html += '<div class="add-person"><div style="font-weight:800;color:var(--navy);font-size:13px;margin-bottom:11px">+ Add Person to Group #' + gid + '</div>';
+    html += '<form method="POST"><input type="hidden" name="grp_id" value="' + gid + '"><div class="add-person-grid"><input type="text" name="new_name" placeholder="Name" required><input type="text" name="new_number1" placeholder="Number 1"><input type="text" name="new_number2" placeholder="Number 2"><input type="text" name="new_number3" placeholder="Number 3"><input type="text" name="new_relation1" placeholder="Relation 1"><input type="text" name="new_relation2" placeholder="Relation 2"><select name="new_main"><option value="">Not Main</option><option value="main">Main</option></select></div><div style="margin-top:10px"><button type="submit" name="add_person" value="1" class="btn btn-add">+ Add Person</button></div></form></div></div></div>';
+
+    html += '<div class="details-grid" style="margin-top:18px"><div class="details-panel"><div class="panel-title">★ Main Persons</div><div class="panel-body">';
+    if (data.main_persons && data.main_persons.length) {
+        html += '<div class="line-list">' + data.main_persons.map(function(n){ return '<div class="line-item main">★ ' + tdlEscapeHtml(n) + '</div>'; }).join('') + '</div>';
+    } else html += '<div style="color:var(--muted)">No main person selected.</div>';
+    html += '</div></div><div class="details-panel"><div class="panel-title">🔗 All Relation</div><div class="panel-body">';
+    if (data.relations && data.relations.length) html += '<div class="line-list">' + data.relations.map(function(n){ return '<div class="line-item relation-item">' + tdlEscapeHtml(n) + '</div>'; }).join('') + '</div>'; else html += '<div style="color:var(--muted)">No relation history.</div>';
+    html += '</div></div></div>';
+
+    return html;
+}
+
+function toggleDetails(grpId, editMode) {
+    var details = document.getElementById('details-' + grpId);
+    var content = document.getElementById('details-content-' + grpId);
+    if (!details || !content) return;
 
     if (details.classList.contains('open')) {
         closeDetails(grpId);
@@ -5608,79 +4932,35 @@ function toggleDetails(
     }
 
     details.classList.add('open');
+    content.innerHTML = '<div style="padding:22px;text-align:center;color:var(--muted)">Loading details…</div>';
 
-    toggleEdit(
-        grpId,
-        editMode
-    );
-
-    setTimeout(
-        function()
-        {
-            details.scrollIntoView({
-                behavior: 'smooth',
-                block: 'nearest'
-            });
-        },
-        80
-    );
-}
-
-
-/* =========================================================
-   CLOSE GROUP DETAILS
-   ========================================================= */
-
-function closeDetails(
-    grpId
-)
-{
-    const details =
-        document.getElementById(
-            'details-' + grpId
-        );
-
-    if (!details) {
+    if (tdlDetailsCache[grpId]) {
+        content.innerHTML = tdlBuildDetailsHtml(tdlDetailsCache[grpId], !!editMode);
         return;
     }
 
-    toggleEdit(
-        grpId,
-        false
-    );
-
-    details.classList.remove(
-        'open'
-    );
+    fetch(window.location.pathname + '?ajax_group=' + encodeURIComponent(grpId), {cache:'no-store'})
+        .then(function(response){ if (!response.ok) throw new Error('HTTP ' + response.status); return response.json(); })
+        .then(function(data){
+            if (!data || !data.ok) throw new Error(data && data.error ? data.error : 'Unable to load group');
+            tdlDetailsCache[grpId] = data;
+            if (details.classList.contains('open')) content.innerHTML = tdlBuildDetailsHtml(data, !!editMode);
+        })
+        .catch(function(error){
+            content.innerHTML = '<div style="padding:22px;color:#b42318">Unable to load details. Please try again.</div>';
+            console.error(error);
+        });
 }
 
+function closeDetails(grpId) {
+    var details = document.getElementById('details-' + grpId);
+    if (!details) return;
+    details.classList.remove('open');
+}
 
-/* =========================================================
-   EDIT MODE
-   ========================================================= */
-
-function toggleEdit(
-    grpId,
-    show
-)
-{
-
-    const edit =
-        document.getElementById(
-            'group-edit-' + grpId
-        );
-
-
-    if (!edit) {
-        return;
-    }
-
-
-    edit.style.display =
-        show
-            ? 'block'
-            : 'none';
-
+function toggleEdit(grpId, show) {
+    var edit = document.getElementById('group-edit-' + grpId);
+    if (edit) edit.style.display = show ? 'block' : 'none';
 }
 
 
@@ -5782,6 +5062,250 @@ function prepareGroupSave(gid, form)
     /* TRUE = perform the normal PHP POST. */
     return true;
 }
+
+
+/* =========================================================
+   WHATSAPP MEMBER SELECTION + CONTACT-BY-CONTACT WORKFLOW
+   ========================================================= */
+var tdlWhatsAppQueue = [];
+var tdlWhatsAppIndex = 0;
+var tdlCurrentWhatsAppUrl = '';
+
+function tdlGetPersonCheckboxes() {
+    return Array.from(document.querySelectorAll('.tdl-person-checkbox'));
+}
+
+function tdlGetVisiblePersonItems() {
+    return Array.from(document.querySelectorAll('.tdl-person-item')).filter(function(item) {
+        return item.offsetParent !== null && !item.classList.contains('tdl-person-hidden');
+    });
+}
+
+function tdlSelectionChanged() {
+    tdlUpdateSelectionUI();
+    tdlUpdateWhatsAppStatus();
+}
+
+function tdlUpdateSelectionUI() {
+    var selected = tdlGetPersonCheckboxes().filter(function(cb){ return cb.checked; });
+    var count = document.getElementById('tdlSelectedCount');
+    if (count) count.textContent = selected.length;
+
+    tdlGetPersonCheckboxes().forEach(function(cb) {
+        var item = cb.closest('.tdl-person-item');
+        if (item) item.classList.toggle('tdl-person-selected', cb.checked);
+    });
+}
+
+function tdlUpdateWhatsAppStatus() {
+    var status = document.getElementById('tdlWhatsAppStatus');
+    if (!status) return;
+    var selected = tdlGetPersonCheckboxes().filter(function(cb){ return cb.checked; });
+    var usable = selected.filter(function(cb){ return String(cb.dataset.whatsapp || '').trim() !== ''; });
+    if (!selected.length) {
+        status.textContent = 'Select members from the table above.';
+        return;
+    }
+    if (usable.length !== selected.length) {
+        status.textContent = selected.length + ' selected • ' + usable.length + ' have a usable WhatsApp number. Contacts without a number will be skipped.';
+    } else {
+        status.textContent = selected.length + ' member' + (selected.length === 1 ? '' : 's') + ' ready for WhatsApp.';
+    }
+}
+
+function tdlSelectAllVisible() {
+    var items = tdlGetVisiblePersonItems();
+    items.forEach(function(item) {
+        var cb = item.querySelector('.tdl-person-checkbox');
+        if (cb && String(cb.dataset.whatsapp || '').trim() !== '') cb.checked = true;
+    });
+    tdlUpdateSelectionUI();
+    tdlUpdateWhatsAppStatus();
+}
+
+function tdlClearSelection() {
+    tdlGetPersonCheckboxes().forEach(function(cb){ cb.checked = false; });
+    tdlUpdateSelectionUI();
+    tdlUpdateWhatsAppStatus();
+}
+
+function tdlGetWaFilter() {
+    var el = document.getElementById('tdlWaFilter');
+    return el ? el.value : 'all';
+}
+
+function tdlGetPersonTypeFilter() {
+    var el = document.getElementById('tdlPersonTypeFilter');
+    return el ? el.value : 'all';
+}
+
+function tdlPersonPassesWhatsAppFilter(item) {
+    var cb = item.querySelector('.tdl-person-checkbox');
+    if (!cb) return false;
+    var filter = tdlGetWaFilter();
+    var hasWa = String(cb.dataset.whatsapp || '').trim() !== '';
+    var selected = !!cb.checked;
+    if (filter === 'with_whatsapp') return hasWa;
+    if (filter === 'without_whatsapp') return !hasWa;
+    if (filter === 'selected') return selected;
+    if (filter === 'unselected') return !selected;
+    return true;
+}
+
+function tdlPersonPassesTypeFilter(item) {
+    var filter = tdlGetPersonTypeFilter();
+    var cb = item.querySelector('.tdl-person-checkbox');
+    if (!cb) return false;
+    var isMain = cb.dataset.main === '1';
+    if (filter === 'main') return isMain;
+    if (filter === 'non_main') return !isMain;
+    return true;
+}
+
+/* Redefine live search so existing Search + Area filters also respect the new member filters. */
+function tdlLiveSearch() {
+    var input = document.getElementById('groupSearch');
+    var query = input ? input.value : '';
+    var selectedAreas = tdlGetSelectedAreas();
+    var visibleGroups = 0;
+
+    tdlGetRows().forEach(function(row) {
+        var searchOK = tdlRowMatches(row, query);
+        var rowArea = row.getAttribute('data-area') || '';
+        var rowAreas = rowArea.split(',').map(function(oneArea) {
+            return tdlNormalize(oneArea).trim();
+        }).filter(Boolean);
+        var areaOK = selectedAreas.length === 0 || selectedAreas.some(function(selectedArea) {
+            return rowAreas.indexOf(selectedArea) !== -1;
+        });
+
+        var personItems = Array.from(row.querySelectorAll('.tdl-person-item'));
+        var anyPersonVisible = false;
+        personItems.forEach(function(item) {
+            var pass = tdlPersonPassesWhatsAppFilter(item) && tdlPersonPassesTypeFilter(item);
+            item.classList.toggle('tdl-person-hidden', !pass);
+            if (pass) anyPersonVisible = true;
+        });
+
+        /* If a member filter is active, a group is visible only when it has a matching member. */
+        var memberFilterActive = tdlGetWaFilter() !== 'all' || tdlGetPersonTypeFilter() !== 'all';
+        var show = searchOK && areaOK && (!memberFilterActive || anyPersonVisible);
+        row.style.display = show ? 'table-row' : 'none';
+
+        if (show) visibleGroups++;
+        else {
+            var details = row.nextElementSibling;
+            if (details && details.classList.contains('details-row')) details.classList.remove('open');
+        }
+    });
+
+    var total = document.getElementById('totalGroups');
+    if (total) total.textContent = visibleGroups;
+    tdlApplyHighlights(query);
+    tdlUpdateSelectionUI();
+    tdlUpdateWhatsAppStatus();
+}
+
+function tdlBuildWhatsAppQueue() {
+    return tdlGetPersonCheckboxes().filter(function(cb) {
+        return cb.checked && String(cb.dataset.whatsapp || '').trim() !== '';
+    }).map(function(cb) {
+        var item = cb.closest('.tdl-person-item');
+        var row = cb.closest('tr.group-row');
+        var gid = cb.dataset.groupId || (row ? row.dataset.groupId : '');
+        var name = cb.dataset.name || 'Contact';
+        var number = String(cb.dataset.whatsapp || '').trim();
+        var company = row ? ((row.querySelector('.company') || {}).textContent || '').trim() : '';
+        var scheme = row ? ((row.querySelector('.scheme') || {}).textContent || '').trim() : '';
+        var area = row ? (row.dataset.area || '') : '';
+        return {id:cb.dataset.personId, gid:gid, name:name, number:number, company:company, scheme:scheme, area:area};
+    });
+}
+
+function tdlPrepareWhatsAppMessage(contact) {
+    var el = document.getElementById('tdlWhatsAppMessage');
+    var message = el ? el.value : '';
+    return message
+        .replace(/\{\{\s*name\s*\}\}/gi, contact.name)
+        .replace(/\{\{\s*company\s*\}\}/gi, contact.company)
+        .replace(/\{\{\s*scheme\s*\}\}/gi, contact.scheme)
+        .replace(/\{\{\s*area\s*\}\}/gi, contact.area);
+}
+
+function tdlRenderWhatsAppContact() {
+    var modal = document.getElementById('tdlWaModal');
+    var card = document.getElementById('tdlWaContactCard');
+    var bar = document.getElementById('tdlWaProgressBar');
+    if (!modal || !card || !bar) return;
+
+    if (tdlWhatsAppIndex >= tdlWhatsAppQueue.length) {
+        card.innerHTML = '<div style="text-align:center;padding:18px"><div style="font-size:30px">✓</div><div style="font-size:18px;font-weight:900;color:var(--navy);margin-top:6px">All selected contacts completed</div><div style="color:var(--muted);font-size:12px;margin-top:5px">You can close this window or start another selection.</div></div>';
+        bar.style.width = '100%';
+        tdlCurrentWhatsAppUrl = '';
+        return;
+    }
+
+    var c = tdlWhatsAppQueue[tdlWhatsAppIndex];
+    var message = tdlPrepareWhatsAppMessage(c);
+    tdlCurrentWhatsAppUrl = 'https://wa.me/' + encodeURIComponent(c.number) + (message ? '?text=' + encodeURIComponent(message) : '');
+    var percent = ((tdlWhatsAppIndex) / tdlWhatsAppQueue.length) * 100;
+    bar.style.width = percent + '%';
+
+    card.innerHTML =
+        '<div style="font-size:11px;color:var(--muted);font-weight:800;margin-bottom:7px">CONTACT ' + (tdlWhatsAppIndex + 1) + ' OF ' + tdlWhatsAppQueue.length + '</div>' +
+        '<div class="tdl-wa-contact-name">' + tdlEscapeHtml(c.name) + '</div>' +
+        '<div class="tdl-wa-contact-number">+ ' + tdlEscapeHtml(c.number) + '</div>' +
+        '<div class="tdl-wa-contact-meta">Group #' + tdlEscapeHtml(c.gid) + (c.company ? ' • ' + tdlEscapeHtml(c.company) : '') + (c.scheme ? ' • ' + tdlEscapeHtml(c.scheme) : '') + '<br>' + (message ? 'Message prepared and will be inserted into WhatsApp.' : 'No message entered — WhatsApp will open without a prefilled message.') + '</div>';
+}
+
+function tdlStartWhatsApp() {
+    var selected = tdlGetPersonCheckboxes().filter(function(cb){ return cb.checked; });
+    if (!selected.length) {
+        alert('Please select at least one member first.');
+        return;
+    }
+    tdlWhatsAppQueue = tdlBuildWhatsAppQueue();
+    if (!tdlWhatsAppQueue.length) {
+        alert('The selected members do not have a usable WhatsApp number.');
+        return;
+    }
+    tdlWhatsAppIndex = 0;
+    var modal = document.getElementById('tdlWaModal');
+    if (modal) { modal.classList.add('open'); modal.setAttribute('aria-hidden','false'); }
+    tdlRenderWhatsAppContact();
+}
+
+function tdlOpenCurrentWhatsApp() {
+    if (!tdlCurrentWhatsAppUrl) return;
+    /* This click is a direct user gesture, so browsers normally allow it. */
+    window.open(tdlCurrentWhatsAppUrl, '_blank', 'noopener,noreferrer');
+}
+
+function tdlNextWhatsApp() {
+    if (tdlWhatsAppIndex < tdlWhatsAppQueue.length) tdlWhatsAppIndex++;
+    tdlRenderWhatsAppContact();
+}
+
+function tdlSkipWhatsApp() {
+    tdlNextWhatsApp();
+}
+
+function tdlCloseWhatsApp() {
+    var modal = document.getElementById('tdlWaModal');
+    if (modal) { modal.classList.remove('open'); modal.setAttribute('aria-hidden','true'); }
+}
+
+document.addEventListener('keydown', function(event) {
+    if (event.key === 'Escape') tdlCloseWhatsApp();
+});
+
+/* Initialize the new controls without changing the existing PHP filters. */
+document.addEventListener('DOMContentLoaded', function() {
+    tdlUpdateSelectionUI();
+    tdlUpdateWhatsAppStatus();
+    tdlLiveSearch();
+});
+
 </script>
 
 

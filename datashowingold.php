@@ -38,6 +38,11 @@ if (!in_array($star_filter, ['', 'starred', 'not_starred'], true)) {
     $star_filter = '';
 }
 
+$group_sort = $_GET['group_sort'] ?? 'desc';
+if (!in_array($group_sort, ['asc', 'desc'], true)) {
+    $group_sort = 'desc';
+}
+
 
 
 /* Fetch every unique individual area currently stored in data.area.
@@ -1536,7 +1541,7 @@ $groupSql = "
         )
     ) . "
     GROUP BY d.grp_id
-    ORDER BY CAST(d.grp_id AS UNSIGNED) DESC
+    ORDER BY CAST(d.grp_id AS UNSIGNED) " . strtoupper($group_sort) . "
 ";
 
 $groupResult =
@@ -2576,6 +2581,25 @@ tbody tr:hover {
     color:
         var(--gold-dark);
 
+}
+
+.group-sort-header {
+    cursor: pointer;
+    user-select: none;
+}
+
+.group-sort-header:hover {
+    background: var(--navy-3);
+}
+
+.group-sort-header > span:first-child {
+    display: inline-block;
+    margin-right: 4px;
+}
+
+.group-sort-icon {
+    font-size: 12px;
+    opacity: .85;
 }
 
 
@@ -4104,8 +4128,14 @@ tbody tr:hover {
 
                 <tr>
 
-                    <th>
-                        Group
+                    <th class="group-sort-header" title="Click to sort Group high to low / low to high">
+                        <a
+                            href="?group_sort=<?= $group_sort === 'asc' ? 'desc' : 'asc' ?>&star_filter=<?= e($star_filter) ?>&q=<?= e($_GET['q'] ?? '') ?>"
+                            style="display:flex;align-items:center;gap:4px;color:inherit;text-decoration:none;width:100%;height:100%;cursor:pointer;"
+                        >
+                            <span>Group</span>
+                            <span class="group-sort-icon"><?= $group_sort === 'asc' ? '↑' : '↓' ?></span>
+                        </a>
                     </th>
 
                     <th>
@@ -4206,6 +4236,7 @@ $searchText =
 
                 <tr
                     class="group-row"
+                    data-group-id="<?= $gid ?>"
                     data-search="<?= e($searchText) ?>"
                     data-area="<?= e(
                         strtolower(
@@ -4318,7 +4349,7 @@ $searchText =
                                         <?php foreach ($personNumbers as $personNumber): ?>
                                             <?php $waNumber = preg_replace('/[^0-9]/', '', (string)$personNumber); ?>
                                             <?php if ($waNumber !== ''): ?>
-                                                <a href="https://wa.me/+91<?= e($waNumber) ?>" target="_blank" rel="noopener noreferrer" style="color:#159957;text-decoration:none;font-weight:700;display:inline-block;margin-right:7px;" title="Open WhatsApp"><?= e($personNumber) ?></a>
+                                                <a href="https://wa.me/<?= e($waNumber) ?>" target="_blank" rel="noopener noreferrer" style="color:#159957;text-decoration:none;font-weight:700;display:inline-block;margin-right:7px;" title="Open WhatsApp"><?= e($personNumber) ?></a>
                                             <?php else: ?>
                                                 <span style="display:inline-block;margin-right:7px;"><?= e($personNumber) ?></span>
                                             <?php endif; ?>
@@ -4381,7 +4412,7 @@ $searchText =
                                             <?php foreach ($mainNumbers as $mainNumber): ?>
                                                 <?php $mainWaNumber = preg_replace('/[^0-9]/', '', (string)$mainNumber); ?>
                                                 <?php if ($mainWaNumber !== ''): ?>
-                                                    <a href="https://wa.me/+91<?= e($mainWaNumber) ?>" target="_blank" rel="noopener noreferrer" style="color:#159957;text-decoration:none;font-weight:700;display:inline-block;margin-right:7px;" title="Open WhatsApp"><?= e($mainNumber) ?></a>
+                                                    <a href="https://wa.me/<?= e($mainWaNumber) ?>" target="_blank" rel="noopener noreferrer" style="color:#159957;text-decoration:none;font-weight:700;display:inline-block;margin-right:7px;" title="Open WhatsApp"><?= e($mainNumber) ?></a>
                                                 <?php else: ?>
                                                     <span style="display:inline-block;margin-right:7px;"><?= e($mainNumber) ?></span>
                                                 <?php endif; ?>
@@ -5568,21 +5599,11 @@ function tdlLiveSearch() {
     tdlApplyHighlights(query);
 }
 
-/* Area filter should also update immediately. */
-document.addEventListener('DOMContentLoaded', function() {
-    tdlUpdateAreaButton();
-
-    document.addEventListener('click', function(event) {
-        var wrap = document.getElementById('areaSelectWrap');
-        if (wrap && !wrap.contains(event.target)) {
-            wrap.classList.remove('open');
-        }
-    });
-
-    /* If browser restored a previous search value, apply it once. */
-    tdlLiveSearch();
-});
-
+/* =========================================================
+   GROUP COLUMN SORT
+   Sorting is handled by PHP/SQL so it cannot interfere with
+   any other JavaScript functionality on this page.
+   ========================================================= */
 
 /* =========================================================
    VIEW DETAILS
