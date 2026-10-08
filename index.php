@@ -217,6 +217,48 @@ body{
     <div class="arrow">›</div>
 </a>
 
+
+<a class="card gold" href="wap4.php">
+    <div class="card-icon">＋</div>
+    <div class="card-content">
+        <span class="card-number">05 · BW</span>
+        <h3>Bulk Whatsapp</h3>
+    <!-- <p>Create a new group and add all required company, scheme and person details.</p> -->
+    </div>
+    <div class="arrow">›</div>
+</a>
+
+<a class="card blue" href="datashowingTemp.php">
+    <div class="card-icon">⌕</div>
+    <div class="card-content">
+        <span class="card-number">06 · Temp</span>
+        <h3>Temp DataShowing</h3>
+        <!-- <p>Open complete group information and manage the internal group details.</p> -->
+    </div>
+    <div class="arrow">›</div>
+</a>
+
+
+<a class="card blue" href="client_handling.php">
+    <div class="card-icon">⌕</div>
+    <div class="card-content">
+        <span class="card-number">07 · Client Handling</span>
+        <h3>Clinet Model</h3>
+        <!-- <p>Open complete group information and manage the internal group details.</p> -->
+    </div>
+    <div class="arrow">›</div>
+</a>
+
+
+<a class="card gold" href="yup11/datashowing.php">
+    <div class="card-icon">⌕</div>
+    <div class="card-content">
+        <span class="card-number">07 · Updating</span>
+        <h3>Updating for Bulk special11</h3>
+        <!-- <p>Open complete group information and manage the internal group details.</p> -->
+    </div>
+    <div class="arrow">›</div>
+</a>
 </section>
 
 <div class="footer">THE DIVINE LANDS &nbsp;•&nbsp; MANAGEMENT SYSTEM</div>

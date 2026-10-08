@@ -51,6 +51,9 @@ $scheme_name = '';
 
 $selected_areas = [];
 
+$edit_grp_id = (int)($_GET['edit_grp_id'] ?? $_POST['edit_grp_id'] ?? 0);
+$edit_mode = $edit_grp_id > 0;
+
 
 /* =========================================================
    AREA OPTIONS
@@ -912,12 +915,919 @@ function parseContacts($input)
 }
 
 /* =========================================================
+   EDIT / UPDATE EXISTING GROUP
+   IMPORTANT:
+   - Normal Add Data code below is kept unchanged.
+   - In edit mode, the old group is loaded into the same grid.
+   - On Update, the group's data + area rows are replaced inside
+     ONE transaction, but the SAME grp_id is reused.
+   - Previous scheme history is collected BEFORE deletion.
+========================================================= */
+
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && $edit_grp_id > 0) {
+
+    $groupStmt = mysqli_prepare(
+        $con,
+        "SELECT company_name, scheme_name, area
+         FROM data
+         WHERE grp_id = ?
+         LIMIT 1"
+    );
+
+    if (!$groupStmt) {
+        $error = 'Unable to load Group #' . $edit_grp_id . ': ' . mysqli_error($con);
+    } else {
+
+        mysqli_stmt_bind_param($groupStmt, 'i', $edit_grp_id);
+        mysqli_stmt_execute($groupStmt);
+        $groupResult = mysqli_stmt_get_result($groupStmt);
+        $groupRow = mysqli_fetch_assoc($groupResult);
+        mysqli_stmt_close($groupStmt);
+
+        if (!$groupRow) {
+
+            $edit_mode = false;
+            $edit_grp_id = 0;
+            $error = 'Group not found.';
+
+        } else {
+
+            $company_name = trim((string)($groupRow['company_name'] ?? ''));
+            $scheme_name  = trim((string)($groupRow['scheme_name'] ?? ''));
+
+            $selected_areas = array_values(array_filter(
+                array_map(
+                    'trim',
+                    preg_split('/\s*,\s*/', (string)($groupRow['area'] ?? ''))
+                ),
+                static function($v) {
+                    return $v !== '';
+                }
+            ));
+
+            $personStmt = mysqli_prepare(
+                $con,
+                "SELECT id,name,number1,number2,number3,relation1,relation2,`main`
+                 FROM data
+                 WHERE grp_id = ?
+                 ORDER BY id ASC"
+            );
+
+            if ($personStmt) {
+
+                mysqli_stmt_bind_param($personStmt, 'i', $edit_grp_id);
+                mysqli_stmt_execute($personStmt);
+                $personResult = mysqli_stmt_get_result($personStmt);
+
+                while ($personRow = mysqli_fetch_assoc($personResult)) {
+
+                    $contacts[] = [
+                        'name' => $personRow['name'] ?? '',
+                        'email' => '',
+                        'mobiles' => [
+                            $personRow['number1'] ?? '',
+                            $personRow['number2'] ?? '',
+                            $personRow['number3'] ?? ''
+                        ],
+                        'duplicate_count' => 1,
+                        'relation1' => $personRow['relation1'] ?? '',
+                        'relation2' => $personRow['relation2'] ?? '',
+                        'main' => $personRow['main'] ?? '',
+                        'person_id' => (int)$personRow['id']
+                    ];
+                }
+
+                mysqli_stmt_close($personStmt);
+
+            } else {
+                $error = 'Unable to load people for Group #' . $edit_grp_id . ': ' . mysqli_error($con);
+            }
+
+            if ($error === '') {
+                $success = 'Editing Group #' . $edit_grp_id . '. The existing people are loaded below.';
+            }
+        }
+    }
+}
+
+
+/* =========================================================
+   EDIT MODE GENERATE PREVIEW
+   - This is separate from the original Add Data preview.
+   - Existing grid stays.
+   - New pasted people are appended.
+   - Same-name pasted people are not duplicated.
+========================================================= */
+
+if (
+    $_SERVER['REQUEST_METHOD'] === 'POST' &&
+    $edit_mode &&
+    isset($_POST['generate_preview'])
+) {
+
+    $input = (string)($_POST['contacts'] ?? '');
+
+    $company_name = trim((string)($_POST['company_name'] ?? ''));
+    $scheme_name  = trim((string)($_POST['scheme_name'] ?? ''));
+
+    $selected_areas = $_POST['areas'] ?? [];
+    if (!is_array($selected_areas)) {
+        $selected_areas = [];
+    }
+
+    $selected_areas = array_values(
+        array_intersect($selected_areas, $area_options)
+    );
+
+    if ($company_name === '') {
+        $error = 'Please enter Company Name.';
+    } elseif ($scheme_name === '') {
+        $error = 'Please enter Scheme Name.';
+    } elseif (empty($selected_areas)) {
+        $error = 'Please select at least one Area.';
+    } else {
+
+        $currentNames     = $_POST['person_name'] ?? [];
+        $currentNumber1   = $_POST['number1'] ?? [];
+        $currentNumber2   = $_POST['number2'] ?? [];
+        $currentNumber3   = $_POST['number3'] ?? [];
+        $currentRelation1 = $_POST['relation1'] ?? [];
+        $currentRelation2 = $_POST['relation2'] ?? [];
+        $currentMain      = $_POST['main'] ?? [];
+        $currentPersonIds = $_POST['person_id'] ?? [];
+
+        foreach (
+            [
+                'currentNames',
+                'currentNumber1',
+                'currentNumber2',
+                'currentNumber3',
+                'currentRelation1',
+                'currentRelation2',
+                'currentMain',
+                'currentPersonIds'
+            ] as $arrName
+        ) {
+            if (!is_array($$arrName)) {
+                $$arrName = [];
+            }
+        }
+
+        $merged = [];
+        $nameIndex = [];
+
+        /*
+         * Keep the same duplicate-name behaviour as the original Add Data
+         * preview:
+         *
+         * - Same name + same number  = do nothing.
+         * - Same name + different number = put it into the next empty
+         *   Number 1 / Number 2 / Number 3 slot.
+         * - Never create a second row just because the name already exists.
+         * - Existing row values, relations and Main selection are preserved.
+         */
+        $mergeMobileNumbers = function (&$targetMobiles, $sourceMobiles) {
+
+            while (count($targetMobiles) < 3) {
+                $targetMobiles[] = '';
+            }
+
+            foreach ((array)$sourceMobiles as $phone) {
+
+                $phone = cleanMobile($phone);
+
+                if ($phone === '') {
+                    continue;
+                }
+
+                /* Same number anywhere in this person's 3 slots = ignore. */
+                $alreadyExists = false;
+
+                foreach ($targetMobiles as $existingPhone) {
+                    if (
+                        cleanMobile($existingPhone) !== '' &&
+                        cleanMobile($existingPhone) === $phone
+                    ) {
+                        $alreadyExists = true;
+                        break;
+                    }
+                }
+
+                if ($alreadyExists) {
+                    continue;
+                }
+
+                /* Different number = first available number slot. */
+                for ($slot = 0; $slot < 3; $slot++) {
+                    if (trim((string)$targetMobiles[$slot]) === '') {
+                        $targetMobiles[$slot] = $phone;
+                        break;
+                    }
+                }
+            }
+
+            $targetMobiles = array_slice(
+                array_pad($targetMobiles, 3, ''),
+                0,
+                3
+            );
+        };
+
+        /* ---------------------------------------------------------
+           1. Start with EVERYTHING currently visible in the grid.
+              Never throw an existing row away during Generate Preview.
+        --------------------------------------------------------- */
+        foreach ($currentNames as $key => $personName) {
+
+            $personName = trim((string)$personName);
+
+            if ($personName === '') {
+                continue;
+            }
+
+            $mobiles = [
+                cleanMobile($currentNumber1[$key] ?? ''),
+                cleanMobile($currentNumber2[$key] ?? ''),
+                cleanMobile($currentNumber3[$key] ?? '')
+            ];
+
+            $rawRelation1 = trim((string)($currentRelation1[$key] ?? ''));
+            /* If a previous preview already prefixed the duplicate count,
+               keep only the actual relation text so the count is never
+               stacked again on the next Generate Preview. */
+            $baseRelation1 = preg_replace('/^\s*\d+\s+/u', '', $rawRelation1);
+            if ($baseRelation1 === null) {
+                $baseRelation1 = $rawRelation1;
+            }
+
+            $contact = [
+                'name' => $personName,
+                'email' => '',
+                'mobiles' => array_slice(array_pad($mobiles, 3, ''), 0, 3),
+                'duplicate_count' => 1,
+                'relation1' => trim($baseRelation1),
+                'relation2' => trim((string)($currentRelation2[$key] ?? '')),
+                'main' => (($currentMain[$key] ?? '') === 'main') ? 'main' : '',
+                'person_id' => (int)($currentPersonIds[$key] ?? 0)
+            ];
+
+            $norm = normalizeName($personName);
+
+            if ($norm === '') {
+                continue;
+            }
+
+            /*
+             * If the visible grid already contains the same person,
+             * merge the second row's numbers into the first row instead
+             * of silently deleting the second row's useful data.
+             */
+            if (isset($nameIndex[$norm])) {
+
+                $idx = $nameIndex[$norm];
+
+                $mergeMobileNumbers(
+                    $merged[$idx]['mobiles'],
+                    $contact['mobiles']
+                );
+
+                /* Same person = one more occurrence.  This count is used
+                   for the Relation 1 prefix, while phone numbers are still
+                   de-duplicated independently. */
+                $merged[$idx]['duplicate_count'] =
+                    (int)($merged[$idx]['duplicate_count'] ?? 1) + 1;
+
+                if (
+                    trim((string)$merged[$idx]['relation1']) === '' &&
+                    trim((string)$contact['relation1']) !== ''
+                ) {
+                    $merged[$idx]['relation1'] = $contact['relation1'];
+                }
+
+                if (
+                    trim((string)$merged[$idx]['relation2']) === '' &&
+                    trim((string)$contact['relation2']) !== ''
+                ) {
+                    $merged[$idx]['relation2'] = $contact['relation2'];
+                }
+
+                if (
+                    ($merged[$idx]['main'] ?? '') !== 'main' &&
+                    ($contact['main'] ?? '') === 'main'
+                ) {
+                    $merged[$idx]['main'] = 'main';
+                }
+
+                continue;
+            }
+
+            $nameIndex[$norm] = count($merged);
+            $merged[] = $contact;
+        }
+
+        /* ---------------------------------------------------------
+           2. Process newly pasted contacts using the SAME old rules.
+        --------------------------------------------------------- */
+        $pastedContacts = parseContacts($input);
+
+        foreach ($pastedContacts as $pasted) {
+
+            $pastedName = trim((string)($pasted['name'] ?? ''));
+
+            if ($pastedName === '') {
+                continue;
+            }
+
+            $norm = normalizeName($pastedName);
+
+            if ($norm === '') {
+                continue;
+            }
+
+            /* Same name: merge numbers; do not create another person row. */
+            if (isset($nameIndex[$norm])) {
+
+                $idx = $nameIndex[$norm];
+
+                $mergeMobileNumbers(
+                    $merged[$idx]['mobiles'],
+                    $pasted['mobiles'] ?? []
+                );
+
+                /* Same name = one more occurrence.  Do not use the phone
+                   count here: identical phone numbers still count as a
+                   repeated name, while the phone itself is not duplicated. */
+                $merged[$idx]['duplicate_count'] =
+                    (int)($merged[$idx]['duplicate_count'] ?? 1) +
+                    (int)($pasted['duplicate_count'] ?? 1);
+
+                /* Keep existing relation/Main values, but fill blanks if
+                   the pasted parser supplied a value. */
+                if (
+                    trim((string)($merged[$idx]['relation1'] ?? '')) === '' &&
+                    trim((string)($pasted['relation1'] ?? '')) !== ''
+                ) {
+                    $merged[$idx]['relation1'] = trim((string)$pasted['relation1']);
+                }
+
+                if (
+                    trim((string)($merged[$idx]['relation2'] ?? '')) === '' &&
+                    trim((string)($pasted['relation2'] ?? '')) !== ''
+                ) {
+                    $merged[$idx]['relation2'] = trim((string)$pasted['relation2']);
+                }
+
+                continue;
+            }
+
+            /* Completely new person: append as a new row. */
+            $pasted['person_id'] = 0;
+            $pasted['mobiles'] = array_slice(
+                array_pad(
+                    array_values(array_map('cleanMobile', (array)($pasted['mobiles'] ?? []))),
+                    3,
+                    ''
+                ),
+                0,
+                3
+            );
+
+            $merged[] = $pasted;
+            $nameIndex[$norm] = count($merged) - 1;
+        }
+
+        $contacts = array_values($merged);
+
+        if (empty($contacts)) {
+            $error = 'No persons are available in the grid or pasted data.';
+            $success = '';
+        } else {
+            $newCount = 0;
+
+            foreach ($contacts as $contact) {
+                if ((int)($contact['person_id'] ?? 0) === 0) {
+                    $newCount++;
+                }
+            }
+
+            $success = count($contacts) . ' people in preview.';
+            if ($newCount > 0) {
+                $success .= ' ' . $newCount . ' new person(s) will be added to this same Group #' . $edit_grp_id . '.';
+            }
+        }
+    }
+}
+
+
+/* =========================================================
+   UPDATE EXISTING GROUP
+   REPLACE THE GROUP, KEEP THE SAME grp_id
+========================================================= */
+
+if (
+    $_SERVER['REQUEST_METHOD'] === 'POST' &&
+    isset($_POST['update_existing_group']) &&
+    $edit_grp_id > 0
+) {
+
+    $edit_grp_id = (int)($_POST['edit_grp_id'] ?? $edit_grp_id);
+
+    $company_name = trim((string)($_POST['company_name'] ?? ''));
+    $scheme_name  = trim((string)($_POST['scheme_name'] ?? ''));
+
+    $selected_areas = $_POST['areas'] ?? [];
+    if (!is_array($selected_areas)) {
+        $selected_areas = [];
+    }
+
+    $selected_areas = array_values(
+        array_intersect($selected_areas, $area_options)
+    );
+
+    $names     = $_POST['person_name'] ?? [];
+    $number1   = $_POST['number1'] ?? [];
+    $number2   = $_POST['number2'] ?? [];
+    $number3   = $_POST['number3'] ?? [];
+    $relation1 = $_POST['relation1'] ?? [];
+    $relation2 = $_POST['relation2'] ?? [];
+    $main      = $_POST['main'] ?? [];
+
+    foreach (
+        ['names','number1','number2','number3','relation1','relation2','main'] as $arrName
+    ) {
+        if (!is_array($$arrName)) {
+            $$arrName = [];
+        }
+    }
+
+    if ($company_name === '') {
+        $error = 'Please enter Company Name.';
+    } elseif ($scheme_name === '') {
+        $error = 'Please enter Scheme Name.';
+    } elseif (empty($selected_areas)) {
+        $error = 'Please select at least one Area.';
+    } elseif (empty($names)) {
+        $error = 'No people are present in the preview.';
+    } else {
+
+        mysqli_begin_transaction($con);
+
+        try {
+
+            /* -------------------------------------------------
+               Verify the group and collect EVERYTHING needed
+               BEFORE deleting it.
+            ------------------------------------------------- */
+
+            $verify = mysqli_prepare(
+                $con,
+                "SELECT id FROM data WHERE grp_id = ? LIMIT 1"
+            );
+
+            if (!$verify) {
+                throw new Exception('Unable to verify Group #' . $edit_grp_id . ': ' . mysqli_error($con));
+            }
+
+            mysqli_stmt_bind_param($verify, 'i', $edit_grp_id);
+            mysqli_stmt_execute($verify);
+            $verifyResult = mysqli_stmt_get_result($verify);
+
+            if (!mysqli_fetch_assoc($verifyResult)) {
+                mysqli_stmt_close($verify);
+                throw new Exception('Group #' . $edit_grp_id . ' was not found.');
+            }
+
+            mysqli_stmt_close($verify);
+
+
+            /* Preserve area.star. */
+            $star = 0;
+
+            $starStmt = mysqli_prepare(
+                $con,
+                "SELECT COALESCE(MAX(star),0) AS star
+                 FROM area
+                 WHERE grp_id = ?"
+            );
+
+            if ($starStmt) {
+                mysqli_stmt_bind_param($starStmt, 'i', $edit_grp_id);
+                mysqli_stmt_execute($starStmt);
+                $starResult = mysqli_stmt_get_result($starStmt);
+
+                if ($starRow = mysqli_fetch_assoc($starResult)) {
+                    $star = ((int)$starRow['star'] === 1) ? 1 : 0;
+                }
+
+                mysqli_stmt_close($starStmt);
+            }
+
+
+            /* -------------------------------------------------
+               Build scheme history BEFORE deleting the group.
+               This prevents relation_all history from disappearing.
+            ------------------------------------------------- */
+
+            $historyByName = [];
+
+            $historyStmt = mysqli_prepare(
+                $con,
+                "SELECT name, scheme_name, relation_all
+                 FROM data
+                 WHERE UPPER(TRIM(name)) IN (
+                     SELECT UPPER(TRIM(name))
+                     FROM data
+                     WHERE grp_id = ?
+                 )
+                 ORDER BY id ASC"
+            );
+
+            if (!$historyStmt) {
+                throw new Exception('Unable to prepare scheme history: ' . mysqli_error($con));
+            }
+
+            mysqli_stmt_bind_param($historyStmt, 'i', $edit_grp_id);
+            mysqli_stmt_execute($historyStmt);
+            $historyResult = mysqli_stmt_get_result($historyStmt);
+
+            while ($historyRow = mysqli_fetch_assoc($historyResult)) {
+
+                $historyName = normalizeName($historyRow['name'] ?? '');
+
+                if ($historyName === '') {
+                    continue;
+                }
+
+                if (!isset($historyByName[$historyName])) {
+                    $historyByName[$historyName] = [];
+                }
+
+                $oldScheme = trim((string)($historyRow['scheme_name'] ?? ''));
+
+                if (
+                    $oldScheme !== '' &&
+                    !in_array($oldScheme, $historyByName[$historyName], true)
+                ) {
+                    $historyByName[$historyName][] = $oldScheme;
+                }
+
+                $oldRelation = trim((string)($historyRow['relation_all'] ?? ''));
+
+                if ($oldRelation !== '') {
+
+                    foreach (preg_split('/\s*,\s*/', $oldRelation) as $oldRelationPart) {
+
+                        $oldRelationPart = trim($oldRelationPart);
+
+                        if (
+                            $oldRelationPart !== '' &&
+                            !in_array($oldRelationPart, $historyByName[$historyName], true)
+                        ) {
+                            $historyByName[$historyName][] = $oldRelationPart;
+                        }
+                    }
+                }
+            }
+
+            mysqli_stmt_close($historyStmt);
+
+
+            /* -------------------------------------------------
+               DELETE ONLY THIS GROUP.
+               The transaction means nothing is permanently lost
+               if any new insert fails.
+            ------------------------------------------------- */
+
+            $deleteArea = mysqli_prepare(
+                $con,
+                "DELETE FROM area WHERE grp_id = ?"
+            );
+
+            if (!$deleteArea) {
+                throw new Exception('Unable to prepare old area deletion: ' . mysqli_error($con));
+            }
+
+            mysqli_stmt_bind_param($deleteArea, 'i', $edit_grp_id);
+
+            if (!mysqli_stmt_execute($deleteArea)) {
+                throw new Exception('Unable to delete old areas: ' . mysqli_stmt_error($deleteArea));
+            }
+
+            mysqli_stmt_close($deleteArea);
+
+
+            $deleteData = mysqli_prepare(
+                $con,
+                "DELETE FROM data WHERE grp_id = ?"
+            );
+
+            if (!$deleteData) {
+                throw new Exception('Unable to prepare old group deletion: ' . mysqli_error($con));
+            }
+
+            mysqli_stmt_bind_param($deleteData, 'i', $edit_grp_id);
+
+            if (!mysqli_stmt_execute($deleteData)) {
+                throw new Exception('Unable to delete old Group #' . $edit_grp_id . ': ' . mysqli_stmt_error($deleteData));
+            }
+
+            mysqli_stmt_close($deleteData);
+
+
+            /* -------------------------------------------------
+               Insert the NEW complete contents using the SAME
+               grp_id.
+            ------------------------------------------------- */
+
+            $areaString = implode(', ', $selected_areas);
+
+            $insertStmt = mysqli_prepare(
+                $con,
+                "INSERT INTO data
+                (
+                    grp_id,
+                    company_name,
+                    scheme_name,
+                    name,
+                    number1,
+                    number2,
+                    number3,
+                    relation1,
+                    relation2,
+                    relation_all,
+                    `main`,
+                    area
+                )
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+            );
+
+            if (!$insertStmt) {
+                throw new Exception('Unable to prepare replacement insert: ' . mysqli_error($con));
+            }
+
+            $inserted = 0;
+            $seenNames = [];
+
+            foreach ($names as $key => $rawName) {
+
+                $name = trim((string)$rawName);
+
+                if ($name === '') {
+                    continue;
+                }
+
+                $normalizedName = normalizeName($name);
+
+                /* Prevent duplicate rows from the preview itself. */
+                if ($normalizedName !== '' && isset($seenNames[$normalizedName])) {
+                    continue;
+                }
+
+                if ($normalizedName !== '') {
+                    $seenNames[$normalizedName] = true;
+                }
+
+                $n1 = cleanMobile($number1[$key] ?? '');
+                $n2 = cleanMobile($number2[$key] ?? '');
+                $n3 = cleanMobile($number3[$key] ?? '');
+
+                $r1 = trim((string)($relation1[$key] ?? ''));
+                $r2 = trim((string)($relation2[$key] ?? ''));
+
+                $m = (($main[$key] ?? '') === 'main') ? 'main' : '';
+
+                $previousSchemes = $historyByName[$normalizedName] ?? [];
+
+                /* Current scheme should not appear inside relation_all. */
+                $relationHistory = [];
+
+                foreach ($previousSchemes as $previousScheme) {
+
+                    if (
+                        $previousScheme !== '' &&
+                        strcasecmp($previousScheme, $scheme_name) !== 0 &&
+                        !in_array($previousScheme, $relationHistory, true)
+                    ) {
+                        $relationHistory[] = $previousScheme;
+                    }
+                }
+
+                $relationAll = implode(', ', $relationHistory);
+
+                mysqli_stmt_bind_param(
+                    $insertStmt,
+                    'isssssssssss',
+                    $edit_grp_id,
+                    $company_name,
+                    $scheme_name,
+                    $name,
+                    $n1,
+                    $n2,
+                    $n3,
+                    $r1,
+                    $r2,
+                    $relationAll,
+                    $m,
+                    $areaString
+                );
+
+                if (!mysqli_stmt_execute($insertStmt)) {
+                    throw new Exception(
+                        'Failed to add "' . $name . '" to Group #' . $edit_grp_id . ': ' .
+                        mysqli_stmt_error($insertStmt)
+                    );
+                }
+
+                $inserted++;
+            }
+
+            mysqli_stmt_close($insertStmt);
+
+            if ($inserted === 0) {
+                throw new Exception('No valid people were available to rebuild Group #' . $edit_grp_id . '.');
+            }
+
+
+            /* -------------------------------------------------
+               Rebuild area rows with the SAME grp_id.
+            ------------------------------------------------- */
+
+            $mainNames = [];
+
+            foreach ($names as $key => $personName) {
+
+                $personName = trim((string)$personName);
+                $personMain = trim((string)($main[$key] ?? ''));
+
+                if (
+                    $personName !== '' &&
+                    $personMain === 'main' &&
+                    !in_array($personName, $mainNames, true)
+                ) {
+                    $mainNames[] = $personName;
+                }
+            }
+
+            $mainPersons = implode(', ', $mainNames);
+
+            $areaStmt = mysqli_prepare(
+                $con,
+                "INSERT INTO area
+                (
+                    area,
+                    company_name,
+                    scheme_name,
+                    grp_id,
+                    main_persons,
+                    star
+                )
+                VALUES (?,?,?,?,?,?)"
+            );
+
+            if (!$areaStmt) {
+                throw new Exception('Unable to prepare replacement area insert: ' . mysqli_error($con));
+            }
+
+            foreach ($selected_areas as $oneArea) {
+
+                mysqli_stmt_bind_param(
+                    $areaStmt,
+                    'sssisi',
+                    $oneArea,
+                    $company_name,
+                    $scheme_name,
+                    $edit_grp_id,
+                    $mainPersons,
+                    $star
+                );
+
+                if (!mysqli_stmt_execute($areaStmt)) {
+                    throw new Exception(
+                        'Unable to insert area "' . $oneArea . '": ' .
+                        mysqli_stmt_error($areaStmt)
+                    );
+                }
+            }
+
+            mysqli_stmt_close($areaStmt);
+
+
+            if (!mysqli_commit($con)) {
+                throw new Exception('Database commit failed: ' . mysqli_error($con));
+            }
+
+            header(
+                'Location: ' .
+                $_SERVER['PHP_SELF'] .
+                '?edit_grp_id=' .
+                $edit_grp_id .
+                '&updated=' .
+                $inserted
+            );
+
+            exit;
+
+        } catch (Throwable $ex) {
+
+            mysqli_rollback($con);
+
+            $error = 'UPDATE FAILED: ' . $ex->getMessage();
+            $success = '';
+
+            error_log(
+                'TDL group replacement error [' .
+                $edit_grp_id .
+                ']: ' .
+                $ex->getMessage()
+            );
+
+            /*
+             * Reload the group after rollback so the old data remains
+             * visible if an error occurs.
+             */
+            $contacts = [];
+
+            $reloadStmt = mysqli_prepare(
+                $con,
+                "SELECT company_name,scheme_name,area
+                 FROM data
+                 WHERE grp_id = ?
+                 LIMIT 1"
+            );
+
+            if ($reloadStmt) {
+
+                mysqli_stmt_bind_param($reloadStmt, 'i', $edit_grp_id);
+                mysqli_stmt_execute($reloadStmt);
+                $reloadResult = mysqli_stmt_get_result($reloadStmt);
+
+                if ($reloadHeader = mysqli_fetch_assoc($reloadResult)) {
+
+                    $company_name = $reloadHeader['company_name'] ?? $company_name;
+                    $scheme_name = $reloadHeader['scheme_name'] ?? $scheme_name;
+
+                    $selected_areas = array_values(array_filter(
+                        array_map(
+                            'trim',
+                            preg_split('/\s*,\s*/', (string)($reloadHeader['area'] ?? ''))
+                        ),
+                        static function($v) {
+                            return $v !== '';
+                        }
+                    ));
+                }
+
+                mysqli_stmt_close($reloadStmt);
+            }
+
+            $reloadPeople = mysqli_prepare(
+                $con,
+                "SELECT id,name,number1,number2,number3,relation1,relation2,`main`
+                 FROM data
+                 WHERE grp_id = ?
+                 ORDER BY id ASC"
+            );
+
+            if ($reloadPeople) {
+
+                mysqli_stmt_bind_param($reloadPeople, 'i', $edit_grp_id);
+                mysqli_stmt_execute($reloadPeople);
+                $reloadResult = mysqli_stmt_get_result($reloadPeople);
+
+                while ($person = mysqli_fetch_assoc($reloadResult)) {
+
+                    $contacts[] = [
+                        'name' => $person['name'] ?? '',
+                        'email' => '',
+                        'mobiles' => [
+                            $person['number1'] ?? '',
+                            $person['number2'] ?? '',
+                            $person['number3'] ?? ''
+                        ],
+                        'duplicate_count' => 1,
+                        'relation1' => $person['relation1'] ?? '',
+                        'relation2' => $person['relation2'] ?? '',
+                        'main' => $person['main'] ?? '',
+                        'person_id' => (int)$person['id']
+                    ];
+                }
+
+                mysqli_stmt_close($reloadPeople);
+            }
+        }
+    }
+}
+
+
+/* =========================================================
    GENERATE PREVIEW
 ========================================================= */
 
 if (
 
     $_SERVER['REQUEST_METHOD'] === 'POST' &&
+
+    !$edit_mode &&
 
     isset(
         $_POST['generate_preview']
@@ -2053,6 +2963,25 @@ if (
 
 
 /* =========================================================
+   SUCCESS AFTER GROUP UPDATE REDIRECT
+========================================================= */
+
+if (
+    $_SERVER['REQUEST_METHOD'] === 'GET' &&
+    isset($_GET['updated']) &&
+    $edit_grp_id > 0
+) {
+
+    $updated = (int)$_GET['updated'];
+
+    if ($updated > 0) {
+        $success = 'Group #' . $edit_grp_id . ' updated successfully. ' .
+                   $updated . ' people saved using the same Group ID Updated Updated.';
+    }
+}
+
+
+/* =========================================================
    SUCCESS AFTER REDIRECT
 ========================================================= */
 
@@ -2755,7 +3684,7 @@ tr.main-row .order-number{
     ◉ &nbsp; Panel
 </a> -->
 
-<a href="index.php" class="header-panel">🟢 &nbsp; ALL</a>
+<a href="datashowing.php" class="header-panel">🟢 &nbsp; DataShowing</a>
 
 <div class="steps">
 
@@ -3075,6 +4004,27 @@ Generate Preview
     !empty($contacts)
 ): ?>
 
+<?php if ($edit_mode): ?>
+
+<input
+    type="hidden"
+    name="edit_grp_id"
+    value="<?= (int)$edit_grp_id ?>"
+>
+
+<button
+    type="submit"
+    name="update_existing_group"
+    value="1"
+    class="add-btn"
+    onclick="return confirmUpdateExisting();"
+>
+
+✓ Update Group #<?= (int)$edit_grp_id ?>
+
+</button>
+
+<?php else: ?>
 
 <button
     type="submit"
@@ -3087,6 +4037,8 @@ Generate Preview
 + Add to Database
 
 </button>
+
+<?php endif; ?>
 
 
 <?php endif; ?>
@@ -3254,6 +4206,13 @@ foreach (
 
 <td>
 
+<?php if ($edit_mode): ?>
+<input
+    type="hidden"
+    name="person_id[]"
+    value="<?= (int)($contact['person_id'] ?? 0) ?>"
+>
+<?php endif; ?>
 
 <select
     name="main[]"
@@ -3261,22 +4220,20 @@ foreach (
     onchange="updateMainRow(this);"
 >
 
-
 <option
     value=""
 >
 
 </option>
 
-
 <option
     value="main"
+    <?= (($contact['main'] ?? '') === 'main') ? 'selected' : '' ?>
 >
 
 Main
 
 </option>
-
 
 </select>
 <button type="button" class="copy-contact-btn" onclick="return copyContactRow(this)" title="Copy Name, Number 1, Number 2, Number 3 and Relation 1">
@@ -3359,9 +4316,16 @@ Main
     type="text"
     name="relation1[]"
     value="<?= e(
-        (($contact['duplicate_count'] ?? 1) > 1)
-        ? (string)$contact['duplicate_count']
-        : ''
+        (function($contact) {
+            $relation = trim((string)($contact['relation1'] ?? ''));
+            $count = (int)($contact['duplicate_count'] ?? 1);
+
+            if ($count > 1) {
+                return $count . ($relation !== '' ? ' ' . $relation : '');
+            }
+
+            return $relation;
+        })($contact)
     ) ?>"
     class="edit-input relation-input"
     placeholder="Relation 1"
@@ -3375,7 +4339,7 @@ Main
 <input
     type="text"
     name="relation2[]"
-    value=""
+    value="<?= e($contact['relation2'] ?? '') ?>"
     class="edit-input relation-input"
     placeholder="Relation 2"
 >
@@ -4426,6 +5390,146 @@ function confirmAdd()
     );
 
 }
+
+
+/* =========================================================
+   EDIT MODE - ADD NEW PERSON ROW
+========================================================= */
+
+function addContactRow() {
+
+    var table = document.getElementById('contactTable');
+
+    if (!table) {
+        return;
+    }
+
+    var tbody = table.querySelector('tbody');
+
+    if (!tbody) {
+        return;
+    }
+
+    var row = document.createElement('tr');
+
+    row.draggable = true;
+
+    row.innerHTML =
+        '<td><span class="order-number"></span></td>' +
+        '<td>' +
+            '<input type="hidden" name="person_id[]" value="">' +
+            '<select name="main[]" class="main-select" onchange="updateMainRow(this);">' +
+                '<option value=""></option>' +
+                '<option value="main">Main</option>' +
+            '</select>' +
+            '<button type="button" class="copy-contact-btn" onclick="return copyContactRow(this)">⧉ Copy</button>' +
+        '</td>' +
+        '<td><input type="text" name="person_name[]" value="" class="edit-input name-input" placeholder="Name"></td>' +
+        '<td><input type="text" name="number1[]" value="" class="edit-input number-input"></td>' +
+        '<td><input type="text" name="number2[]" value="" class="edit-input number-input"></td>' +
+        '<td><input type="text" name="number3[]" value="" class="edit-input number-input"></td>' +
+        '<td><input type="text" name="relation1[]" value="" class="edit-input relation-input" placeholder="Relation 1"></td>' +
+        '<td><input type="text" name="relation2[]" value="" class="edit-input relation-input" placeholder="Relation 2"></td>' +
+        '<td class="drag-handle" title="Drag to change order">☷</td>';
+
+    tbody.appendChild(row);
+
+    updateRowNumbers();
+
+    var mainSelect = row.querySelector('.main-select');
+
+    if (mainSelect) {
+        updateMainRow(mainSelect);
+    }
+
+    var nameInput = row.querySelector('.name-input');
+
+    if (nameInput) {
+        nameInput.focus();
+    }
+}
+
+
+/* =========================================================
+   EDIT MODE - CONFIRM UPDATE
+========================================================= */
+
+function confirmUpdateExisting() {
+
+    var rows = document.querySelectorAll(
+        '#contactTable tbody tr'
+    );
+
+    var count = 0;
+
+    rows.forEach(function(row) {
+
+        var name = row.querySelector(
+            'input[name="person_name[]"]'
+        );
+
+        if (
+            name &&
+            name.value.trim() !== ''
+        ) {
+            count++;
+        }
+    });
+
+    if (!count) {
+
+        alert(
+            'Please enter at least one person.'
+        );
+
+        return false;
+    }
+
+    return confirm(
+        'Replace Group #' +
+        <?= (int)$edit_grp_id ?> +
+        ' with the current preview?\\n\\n' +
+        'The same Group ID will be reused. ' +
+        'Existing people are already loaded in the preview, ' +
+        'and new people will be added to this same Group.'
+    );
+}
+
+
+/* =========================================================
+   EDIT MODE - SHOW ADD ROW BUTTON
+========================================================= */
+
+<?php if ($edit_mode): ?>
+
+document.addEventListener(
+    'DOMContentLoaded',
+    function()
+    {
+
+        var preview =
+            document.querySelector('.preview');
+
+        if (!preview) {
+            return;
+        }
+
+        var box =
+            document.createElement('div');
+
+        box.style.cssText =
+            'display:flex;justify-content:flex-end;margin-top:14px;';
+
+        box.innerHTML =
+            '<button type="button" class="copy-btn" onclick="addContactRow();">' +
+            '+ Add New Person Row' +
+            '</button>';
+
+        preview.appendChild(box);
+    }
+);
+
+<?php endif; ?>
 
 
 /* =========================================================
