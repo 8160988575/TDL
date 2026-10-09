@@ -218,7 +218,7 @@ body{
 </a>
 
 
-<a class="card gold" href="wap4.php">
+<a class="card gold" href="wapn9.php">
     <div class="card-icon">＋</div>
     <div class="card-content">
         <span class="card-number">05 · BW</span>
