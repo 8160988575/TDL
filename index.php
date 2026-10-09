@@ -239,7 +239,7 @@ body{
 </a>
 
 
-<a class="card blue" href="client_handling.php">
+<a class="card blue" href="client_handling3.php">
     <div class="card-icon">⌕</div>
     <div class="card-content">
         <span class="card-number">07 · Client Handling</span>
@@ -250,10 +250,10 @@ body{
 </a>
 
 
-<a class="card gold" href="yup11/datashowing.php">
+<a class="card green" href="yup11/datashowing.php">
     <div class="card-icon">⌕</div>
     <div class="card-content">
-        <span class="card-number">07 · Updating</span>
+        <span class="card-number">08 · Updating</span>
         <h3>Updating for Bulk special11</h3>
         <!-- <p>Open complete group information and manage the internal group details.</p> -->
     </div>
