@@ -63,13 +63,11 @@ $areas=[];foreach($active as $v){foreach(preg_split('/\s*,\s*/',(string)$v['area
 
 </style></head><body><div class="wrap">
 
-<div class="top"><div class="brand"><div class="logo">DL</div><div><h1>Client Handling</h1><p>The Divine Lands · Active Client Management</p></div></div><button class="btn primary" onclick="focusSearch()">＋ Add Client</button><button class="btn primary">
-
-    <a href="index.php" class="panel-link" style="color:white;text-decoration:none">
-
-            ALL
-
-        </a></button></div>
+<div class="top"><div class="brand"><div class="logo">DL</div><div><h1>Client Handling</h1><p>The Divine Lands · Active Client Management</p></div></div><button class="btn primary" onclick="focusSearch()">＋ Add Client</button>
+<button class="btn primary" type="button"
+        onclick="window.location.href='index.php'">
+    ALL
+</button></div>
 
 <section class="hero"><h2>Manage your active clients professionally.</h2><p>Select clients from your existing client base, track status, mark serious/open clients and maintain a running follow-up history.</p><button class="btn" onclick="focusSearch()">＋ Select from Client Base</button><button class="btn" onclick="document.getElementById('active').scrollIntoView({behavior:'smooth'})">View Active Clients ↓</button></section>
 

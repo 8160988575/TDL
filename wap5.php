@@ -5739,8 +5739,8 @@ document.addEventListener('DOMContentLoaded', function() {
     tdlInitMemberGroups();
     tdlUpdateSelectionUI();
     tdlUpdateWhatsAppStatus();
-    tdlLiveSearch();
-
+    tdlLiveSearch(); 
+ 
     var restored = tdlLoadWhatsAppCampaign();
     if (restored) {
         if (tdlWhatsAppCampaignStatus === 'paused') {

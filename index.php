@@ -218,7 +218,8 @@ body{
 </a>
 
 
-<a class="card gold" href="wapn9.php">
+<!-- <a class="card gold" href="wapnew11.php"> -->
+    <a class="card gold" href="wapnn12.php">
     <div class="card-icon">＋</div>
     <div class="card-content">
         <span class="card-number">05 · BW</span>
@@ -259,6 +260,28 @@ body{
     </div>
     <div class="arrow">›</div>
 </a>
+
+<a class="card green" href="task_manager.php">
+    <div class="card-icon">⌕</div>
+    <div class="card-content">
+        <span class="card-number">08 · Task Manager</span>
+        <h3>Task Manager</h3>
+        <!-- <p>Open complete group information and manage the internal group details.</p> -->
+    </div>
+    <div class="arrow">›</div>
+</a>
+
+
+<a class="card green" href="bkr_list.php">
+    <div class="card-icon">⌕</div>
+    <div class="card-content">
+        <span class="card-number">09 · BKR LIST</span>
+        <h3>Listof Brokers that are working with us</h3>
+        <!-- <p>Open complete group information and manage the internal group details.</p> -->
+    </div>
+    <div class="arrow">›</div>
+</a>
+
 </section>
 
 <div class="footer">THE DIVINE LANDS &nbsp;•&nbsp; MANAGEMENT SYSTEM</div>
