@@ -70,7 +70,7 @@ if (isset($_GET['client_campaign_action']) && $_GET['client_campaign_action'] ==
     $openClient = !empty($_POST['open_client']) ? 1 : 0;
     $validGrades = ['A+','A','B','C','D'];
     $validStatuses = ['New','Contacted','Interested','Requirement Received','Property Shared','Site Visit Planned','Site Visit Done','Negotiation','Follow-up','On Hold','Converted','Not Interested','Closed'];
-    if ($cid < 1 || !in_array($status, $validStatuses, true) || !in_array($grade, $validGrades, true)) {
+    if ($cid < 1 || !in_array($status, $validStatuses, true) || ($grade !== '' && !in_array($grade, $validGrades, true))) {
         http_response_code(400); echo json_encode(['ok'=>false,'error'=>'Please choose a valid client and status.']); exit;
     }
     $check = mysqli_prepare($con, 'SELECT id FROM data WHERE id=? LIMIT 1');
@@ -5030,7 +5030,7 @@ $mainNumbers = $mainMatch
                     </select>
                     <label for="tdlWaClientGrade" style="font-size:12px;font-weight:800;color:var(--navy);">Grade</label>
                     <select id="tdlWaClientGrade" style="min-height:40px;min-width:90px;border:1px solid #d7dee8;border-radius:9px;padding:0 10px;background:#fff;">
-                        <option value="" selected disabled>Select Grade</option><option value="A+">A+</option><option value="A">A</option><option value="B">B</option><option value="C">C</option><option value="D">D</option>
+                        <option value="" selected>No Grade</option><option value="A+">A+</option><option value="A">A</option><option value="B">B</option><option value="C">C</option><option value="D">D</option>
                     </select>
                     <label style="display:flex;gap:5px;align-items:center;font-size:12px;font-weight:800;color:#c7373c;white-space:nowrap;"><input type="checkbox" id="tdlWaClientSerious" style="accent-color:#d83b43;"> 🔴 Serious</label>
                     <label style="display:flex;gap:5px;align-items:center;font-size:12px;font-weight:800;color:#117441;white-space:nowrap;"><input type="checkbox" id="tdlWaClientOpen" style="accent-color:#159957;"> 🟢 Open Client</label>
@@ -6214,7 +6214,6 @@ function tdlAddCurrentContactToClientHandling() {
     var status = statusSelect ? statusSelect.value : 'New';
     var gradeSelect = document.getElementById('tdlWaClientGrade');
     var grade = gradeSelect ? gradeSelect.value : '';
-    if (!grade) { if (gradeSelect) gradeSelect.focus(); if (typeof tdlWaSetStatus === 'function') tdlWaSetStatus('Please select a grade first.'); else { var gradeStatus = document.getElementById('tdlWaCampaignStatus'); if (gradeStatus) gradeStatus.textContent = 'Please select a grade first.'; } return; }
     var seriousSelect = document.getElementById('tdlWaClientSerious');
     var openSelect = document.getElementById('tdlWaClientOpen');
     var serious = seriousSelect && seriousSelect.checked ? '1' : '0';

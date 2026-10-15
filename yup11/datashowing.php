@@ -4792,7 +4792,7 @@ $mainNumbers = $mainMatch
             </form>
             <button type="button" class="btn btn-view" onclick="toggleDetails(<?= $gid ?>)">👁 View</button>
             <button type="button" class="btn btn-edit" onclick="toggleDetails(<?= $gid ?>, true)">✎ Edit</button>
-            <a href="dataadding.php?edit_grp_id=<?= $gid ?>" class="btn btn-full-update" title="Open this complete group in Data Adding for full update">↔ Full Update</a>
+            <a href="dataadding2.php?edit_grp_id=<?= $gid ?>" class="btn btn-full-update" title="Open this complete group in Data Adding for full update">↔ Full Update</a>
             <form method="POST" style="display:inline" onsubmit="return confirmDeleteGroup(<?= $gid ?>);">
                 <input type="hidden" name="grp_id" value="<?= $gid ?>">
                 <button type="submit" name="delete_group" value="1" class="btn btn-delete">🗑 Delete</button>
@@ -5144,7 +5144,7 @@ function tdlBuildDetailsHtml(data, editMode) {
     html += '<div class="details-toolbar">';
     html += '<div class="details-toolbar-title"><span class="details-toolbar-icon">◆</span><div><strong>Group Details</strong><small>View, edit people, or update group information</small></div></div>';
     html += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">';
-    html += '<a href="dataadding.php?edit_grp_id=' + encodeURIComponent(gid) + '" class="btn btn-full-update" title="Open complete group in Data Adding">↔ Full Update</a>';
+    html += '<a href="dataadding2.php?edit_grp_id=' + encodeURIComponent(gid) + '" class="btn btn-full-update" title="Open complete group in Data Adding">↔ Full Update</a>';
     html += '<button type="button" class="btn btn-close-details" onclick="closeDetails(' + gid + ')">✕ Close</button>';
     html += '</div>';
     html += '</div>';

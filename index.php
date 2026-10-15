@@ -219,7 +219,8 @@ body{
 
 
 <!-- <a class="card gold" href="wapnew11.php"> -->
-    <a class="card gold" href="wapnn12.php">
+    <!-- <a class="card gold" href="wapnn12.php"> -->
+        <a class="card gold" href="wapnnn13.php">
     <div class="card-icon">＋</div>
     <div class="card-content">
         <span class="card-number">05 · BW</span>
@@ -240,7 +241,7 @@ body{
 </a>
 
 
-<a class="card blue" href="client_handling3.php">
+<a class="card blue" href="client_handling4n.php">
     <div class="card-icon">⌕</div>
     <div class="card-content">
         <span class="card-number">07 · Client Handling</span>
