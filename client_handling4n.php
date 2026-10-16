@@ -128,13 +128,12 @@ $areas=[];foreach($active as $v){foreach(preg_split('/\s*,\s*/',(string)$v['area
 
 
 
-<div class="top"><div class="brand"><div class="logo">DL</div><div><h1>Client Handling</h1><p>The Divine Lands · Active Client Management</p></div></div><button class="btn primary" onclick="focusSearch()">＋ Add Client</button>
+<div class="top"><div class="brand"><div class="logo">TDL</div><div><h1>Client Handling</h1><p>The Divine Lands · Active Client Management</p></div></div>
+<!-- <button class="btn primary" onclick="focusSearch()">＋ Add Client</button> -->
 
 <button class="btn primary" type="button"
 
-        onclick="window.location.href='index.php'">
-
-    ALL
+        onclick="window.location.href='index.php'">ALL
 
 </button></div>
 

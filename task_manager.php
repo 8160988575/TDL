@@ -186,7 +186,7 @@ $filterQuery=$_GET; unset($filterQuery['page']); $filterUrl=http_build_query($fi
 <body>
 <div class="app">
 <header class="top"><div class="brand"><div class="logo">✓</div><div><div class="eyebrow">THE DIVINE LANDS · WORKSPACE</div><h1>Task Management</h1><p>Prioritise the right work. Keep every detail moving.</p></div></div>
-<button class="btn primary" type="button" onclick="openTaskModal()">＋ Create task</button>
+<!-- <button class="btn primary" type="button" onclick="openTaskModal()">＋ Create task</button> -->
 <button class="btn primary" type="button"
         onclick="window.location.href='index.php'">
     ALL

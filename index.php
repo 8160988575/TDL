@@ -273,11 +273,22 @@ body{
 </a>
 
 
-<a class="card green" href="bkr_list.php">
+<a class="card gold" href="bkr_list.php">
     <div class="card-icon">⌕</div>
     <div class="card-content">
         <span class="card-number">09 · BKR LIST</span>
         <h3>Listof Brokers that are working with us</h3>
+        <!-- <p>Open complete group information and manage the internal group details.</p> -->
+    </div>
+    <div class="arrow">›</div>
+</a>
+
+
+<a class="card blue" href="land_formatter2.php">
+    <div class="card-icon">⌕</div>
+    <div class="card-content">
+        <span class="card-number">10 · Format_Land</span>
+        <h3>Get Images and PDF,Text For Your Land Here</h3>
         <!-- <p>Open complete group information and manage the internal group details.</p> -->
     </div>
     <div class="arrow">›</div>

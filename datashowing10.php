@@ -34,6 +34,85 @@ if (!$con) {
 
 mysqli_set_charset($con, 'utf8mb4');
 
+/* =========================================================
+   SINGLE-FILE AJAX DETAILS ENDPOINT
+   The same PHP file serves the page and on-demand group details.
+   ========================================================= */
+if (isset($_GET['ajax_group'])) {
+    header('Content-Type: application/json; charset=utf-8');
+
+    $gid = (int)($_GET['ajax_group'] ?? 0);
+    if ($gid <= 0) {
+        http_response_code(400);
+        echo json_encode(['ok'=>false,'error'=>'Invalid group ID']);
+        exit;
+    }
+
+    $stmt = mysqli_prepare($con, "SELECT id, grp_id, company_name, scheme_name, name, number1, number2, number3, relation1, relation2, relation_all, `main`, area FROM data WHERE grp_id = ? ORDER BY id ASC");
+    if (!$stmt) {
+        http_response_code(500);
+        echo json_encode(['ok'=>false,'error'=>mysqli_error($con)]);
+        exit;
+    }
+
+    mysqli_stmt_bind_param($stmt, 'i', $gid);
+    mysqli_stmt_execute($stmt);
+    $result = mysqli_stmt_get_result($stmt);
+
+    $persons = [];
+    $group = ['grp_id'=>$gid,'company_name'=>'','scheme_name'=>'','area'=>''];
+    $relations = [];
+    $mainPersons = [];
+
+    while ($row = mysqli_fetch_assoc($result)) {
+        if ($group['company_name'] === '') $group['company_name'] = $row['company_name'] ?? '';
+        elseif (strcmp((string)($row['company_name'] ?? ''), (string)$group['company_name']) > 0) $group['company_name'] = $row['company_name'] ?? '';
+
+        if ($group['scheme_name'] === '') $group['scheme_name'] = $row['scheme_name'] ?? '';
+        elseif (strcmp((string)($row['scheme_name'] ?? ''), (string)$group['scheme_name']) > 0) $group['scheme_name'] = $row['scheme_name'] ?? '';
+
+        if ($group['area'] === '') $group['area'] = $row['area'] ?? '';
+        elseif (strcmp((string)($row['area'] ?? ''), (string)$group['area']) > 0) $group['area'] = $row['area'] ?? '';
+
+        $persons[] = $row;
+
+        $rel = trim((string)($row['relation_all'] ?? ''));
+        if ($rel !== '') {
+            foreach (preg_split('/\s*,\s*/', $rel) as $r) {
+                $r = trim($r);
+                if ($r !== '' && !in_array($r, $relations, true)) $relations[] = $r;
+            }
+        }
+
+        if (trim((string)($row['main'] ?? '')) === 'main') {
+            $mn = trim((string)($row['name'] ?? ''));
+            if ($mn !== '' && !in_array($mn, $mainPersons, true)) $mainPersons[] = $mn;
+        }
+    }
+    mysqli_stmt_close($stmt);
+
+    $star = 0;
+    $st = mysqli_prepare($con, "SELECT MAX(CASE WHEN LOWER(TRIM(COALESCE(star,''))) IN ('1','star','yes','true') THEN 1 ELSE 0 END) AS is_starred FROM area WHERE grp_id = ?");
+    if ($st) {
+        mysqli_stmt_bind_param($st, 'i', $gid);
+        mysqli_stmt_execute($st);
+        $sr = mysqli_stmt_get_result($st);
+        if ($x = mysqli_fetch_assoc($sr)) $star = (int)($x['is_starred'] ?? 0);
+        mysqli_stmt_close($st);
+    }
+
+    echo json_encode([
+        'ok'=>true,
+        'group'=>$group,
+        'persons'=>$persons,
+        'relations'=>$relations,
+        'main_persons'=>$mainPersons,
+        'is_starred'=>$star
+    ], JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
+    exit;
+}
+
+
 
 /* =========================================================
    VARIABLES
@@ -665,22 +744,24 @@ if (
         $areas = [];
     }
 
-    /* Keep submitted area values matched case-insensitively
-       against the individual area options. */
-    $validAreaMap = [];
-    foreach ($area_options as $validArea) {
-        $validAreaMap[strtolower(trim((string)$validArea))] = $validArea;
-    }
-
+    /*
+     * The area filter/options are built later from the already-loaded
+     * group data so the initial page stays fast.
+     *
+     * IMPORTANT: do not access $area_options here. During a POST request
+     * the update handler runs before the display/query section builds that
+     * variable. The submitted values already came from the area checkboxes,
+     * so we only need to clean and de-duplicate them here.
+     */
     $cleanAreas = [];
     foreach ($areas as $submittedArea) {
-        $key = strtolower(trim((string)$submittedArea));
-        if ($key !== '' && isset($validAreaMap[$key])) {
-            $cleanAreas[] = $validAreaMap[$key];
+        $submittedArea = trim((string)$submittedArea);
+        if ($submittedArea !== '') {
+            $cleanAreas[] = $submittedArea;
         }
     }
 
-    $areas = array_values(array_unique($cleanAreas));
+    $areas = array_values(array_unique($cleanAreas, SORT_STRING));
 
     if ($grp_id <= 0) {
 
@@ -3716,6 +3797,20 @@ tbody tr:hover {
     line-height:inherit !important;
 }
 
+.main-person-marker{
+    display:inline-block;
+    margin-left:3px;
+    padding:1px 5px;
+    border-radius:4px;
+    background:#fff0bd;
+    color:#8a6417;
+    border:1px solid #efd78e;
+    font-size:10px;
+    font-weight:900;
+    line-height:1.35;
+    vertical-align:middle;
+}
+
 </style>
 
 </head>
@@ -4061,1097 +4156,146 @@ tbody tr:hover {
 <?php else: ?>
 
 
-<?php foreach (
-    $groups as $group
-): ?>
-
+<?php foreach ($groups as $group): ?>
 
 <?php
-
-$gid =
-    $group['grp_id'];
-
-$searchText =
-    strtolower(
-        $gid .
-        ' ' .
-        $group['company_name'] .
-        ' ' .
-        $group['scheme_name'] .
-        ' ' .
-        implode(
-            ' ',
-            $group['relations']
-        ) .
-        ' ' .
-        implode(
-            ' ',
-            array_column(
-                $group['persons'],
-                'name'
-            )
-        )
-    );
-
+$gid = (int)$group['grp_id'];
+$searchParts = [
+    $gid,
+    $group['company_name'] ?? '',
+    $group['scheme_name'] ?? '',
+    implode(' ', $group['relations'] ?? []),
+    implode(' ', array_column($group['persons'] ?? [], 'name')),
+    $group['area'] ?? ''
+];
+$searchText = strtolower(implode(' ', $searchParts));
 ?>
 
+<tr
+    class="group-row"
+    data-group-id="<?= $gid ?>"
+    data-search="<?= e($searchText) ?>"
+    data-area="<?= e(strtolower((string)($group['area'] ?? ''))) ?>"
+>
+    <td><div class="group-id">#<?= $gid ?></div></td>
+    <td><div class="company"><?= e($group['company_name'] ?? '') ?></div></td>
 
-                <tr
-                    class="group-row"
-                    data-group-id="<?= $gid ?>"
-                    data-search="<?= e($searchText) ?>"
-                    data-area="<?= e(
-                        strtolower(
-                            $group['area']
-                        )
-                    ) ?>"
-                >
-
-                    <td>
-
-                        <div class="group-id">
-                            #<?= $gid ?>
-                        </div>
-
-                    </td>
-
-
-                    <td>
-
-                        <div class="company">
-                            <?= e(
-                                $group[
-                                    'company_name'
-                                ]
-                            ) ?>
-                        </div>
-
-                    </td>
-
-
-                    <!-- =================================================
-                         THIRD COLUMN - ALL RELATION
-                         ================================================= -->
-
-                    <td>
-
-                        <div class="line-list">
-
-<?php if (
-    !empty(
-        $group['relations']
-    )
-): ?>
-
-<?php foreach (
-    $group['relations']
-    as $relation
-): ?>
-
-                            <div
-                                class="line-item relation-item"
-                            >
-                                <?= e(
-                                    $relation
-                                ) ?>
-                            </div>
-
+    <td>
+        <div class="line-list">
+<?php if (!empty($group['relations'])): ?>
+<?php foreach ($group['relations'] as $relation): ?>
+            <div class="line-item relation-item"><?= e($relation) ?></div>
 <?php endforeach; ?>
-
 <?php else: ?>
-
-                            <div class="line-item">
-                                —
-                            </div>
-
+            <div class="line-item">—</div>
 <?php endif; ?>
-
-                        </div>
-
-                    </td>
-
-
-                    <td>
-
-                        <div class="scheme">
-                            <?= e(
-                                $group[
-                                    'scheme_name'
-                                ]
-                            ) ?>
-                        </div>
-
-                    </td>
-
-
-                    <!-- =================================================
-                         ALL PERSONS
-                         ================================================= -->
-
-                    <td>
-
-                        <div class="line-list">
-
-<?php foreach (
-    $group['persons']
-    as $person
-): ?>
-
-                            <div class="line-item">
-                                <strong><?= e($person['name']) ?></strong>
-                                <?php
-                                $personNumbers = array_values(array_filter([
-                                    trim((string)($person['number1'] ?? '')),
-                                    trim((string)($person['number2'] ?? '')),
-                                    trim((string)($person['number3'] ?? ''))
-                                ], static function ($v) { return $v !== ''; }));
-                                ?>
-                                <?php if (!empty($personNumbers)): ?>
-                                    <div style="margin-top:3px;font-size:11px;line-height:1.35;">
-                                        <?php foreach ($personNumbers as $personNumber): ?>
-                                            <?php $waNumber = preg_replace('/[^0-9]/', '', (string)$personNumber); ?>
-                                            <?php if ($waNumber !== ''): ?>
-                                                <a href="https://wa.me/<?= e($waNumber) ?>" target="_blank" rel="noopener noreferrer" style="color:#159957;text-decoration:none;font-weight:700;display:inline-block;margin-right:7px;" title="Open WhatsApp"><?= e($personNumber) ?></a>
-                                            <?php else: ?>
-                                                <span style="display:inline-block;margin-right:7px;"><?= e($personNumber) ?></span>
-                                            <?php endif; ?>
-                                        <?php endforeach; ?>
-                                    </div>
-                                <?php endif; ?>
-                            </div>
-
-<?php endforeach; ?>
-
-                        </div>
-
-                    </td>
-
-
-                    <!-- =================================================
-                         MAIN PERSONS
-                         ================================================= -->
-
-                    <td>
-
-                        <div class="line-list">
-
-<?php if (
-    !empty(
-        $group[
-            'main_persons'
-        ]
-    )
-): ?>
-
-<?php foreach (
-    $group[
-        'main_persons'
-    ] as $mainPerson
-): ?>
-
-                            <?php
-                            $mainMatch = null;
-                            foreach ($group['persons'] as $person) {
-                                if (strcasecmp(trim((string)($person['name'] ?? '')), trim((string)$mainPerson)) === 0
-                                    && trim((string)($person['main'] ?? '')) === 'main') {
-                                    $mainMatch = $person;
-                                    break;
-                                }
-                            }
-                            ?>
-                            <div class="line-item main">
-                                <strong><?= e($mainPerson) ?></strong>
-                                <?php if ($mainMatch): ?>
-                                    <?php
-                                    $mainNumbers = array_values(array_filter([
-                                        trim((string)($mainMatch['number1'] ?? '')),
-                                        trim((string)($mainMatch['number2'] ?? '')),
-                                        trim((string)($mainMatch['number3'] ?? ''))
-                                    ], static function ($v) { return $v !== ''; }));
-                                    ?>
-                                    <?php if (!empty($mainNumbers)): ?>
-                                        <div style="margin-top:3px;font-size:11px;line-height:1.35;">
-                                            <?php foreach ($mainNumbers as $mainNumber): ?>
-                                                <?php $mainWaNumber = preg_replace('/[^0-9]/', '', (string)$mainNumber); ?>
-                                                <?php if ($mainWaNumber !== ''): ?>
-                                                    <a href="https://wa.me/<?= e($mainWaNumber) ?>" target="_blank" rel="noopener noreferrer" style="color:#159957;text-decoration:none;font-weight:700;display:inline-block;margin-right:7px;" title="Open WhatsApp"><?= e($mainNumber) ?></a>
-                                                <?php else: ?>
-                                                    <span style="display:inline-block;margin-right:7px;"><?= e($mainNumber) ?></span>
-                                                <?php endif; ?>
-                                            <?php endforeach; ?>
-                                        </div>
-                                    <?php endif; ?>
-                                <?php endif; ?>
-                            </div>
-
-<?php endforeach; ?>
-
-<?php else: ?>
-
-                            <div class="line-item">
-                                —
-                            </div>
-
-<?php endif; ?>
-
-                        </div>
-
-                    </td>
-
-
-                    <!-- =================================================
-                         AREA
-                         ================================================= -->
-
-                    <td>
-
-                        <div class="area-list">
-
-<?php
-
-$displayAreas =
-    preg_split(
-        '/\s*,\s*/',
-        $group['area']
-    );
-
-foreach (
-    $displayAreas
-    as $oneArea
-):
-
-if (
-    trim($oneArea) === ''
-) {
-    continue;
-}
-
-?>
-
-                            <span
-                                class="area-badge"
-                            >
-                                <?= e(
-                                    ucwords(
-                                        trim(
-                                            $oneArea
-                                        )
-                                    )
-                                ) ?>
-                            </span>
-
-<?php endforeach; ?>
-
-                        </div>
-
-                    </td>
-
-
-                    <!-- =================================================
-                         ACTIONS
-                         ================================================= -->
-
-                    <td>
-
-                        <div class="actions">
-
-                            <form
-                                method="POST"
-                                style="display:inline"
-                            >
-                                <input
-                                    type="hidden"
-                                    name="grp_id"
-                                    value="<?= $gid ?>"
-                                >
-
-                                <input
-                                    type="hidden"
-                                    name="star_action"
-                                    value="<?= !empty($group['is_starred']) ? 'unstar' : 'star' ?>"
-                                >
-
-                                <button
-                                    type="submit"
-                                    class="btn btn-star <?= !empty($group['is_starred']) ? 'starred' : '' ?>"
-                                    title="<?= !empty($group['is_starred']) ? 'Remove star' : 'Star this group' ?>"
-                                >
-                                    <?= !empty($group['is_starred']) ? '★ Starred' : '☆ Star' ?>
-                                </button>
-                            </form>
-
-                            <button
-                                type="button"
-                                class="btn btn-view"
-                                onclick="toggleDetails(<?= $gid ?>)"
-                            >
-                                👁 View
-                            </button>
-
-
-                            <button
-                                type="button"
-                                class="btn btn-edit"
-                                onclick="toggleDetails(<?= $gid ?>, true)"
-                            >
-                                ✎ Edit
-                            </button>
-
-
-                            <form
-                                method="POST"
-                                style="display:inline"
-                                onsubmit="return confirmDeleteGroup(<?= $gid ?>);"
-                            >
-
-                                <input
-                                    type="hidden"
-                                    name="grp_id"
-                                    value="<?= $gid ?>"
-                                >
-
-                                <button
-                                    type="submit"
-                                    name="delete_group"
-                                    value="1"
-                                    class="btn btn-delete"
-                                >
-                                    🗑 Delete
-                                </button>
-
-                            </form>
-
-                        </div>
-
-                    </td>
-
-                </tr>
-
-
-                <!-- =====================================================
-                     DETAILS
-                     ===================================================== -->
-
-                <tr
-                    class="details-row"
-                    id="details-<?= $gid ?>"
-                >
-
-                    <td
-                        colspan="8"
-                    >
-
-                        <div class="details-content">
-
-                            <div class="details-toolbar">
-    <div class="details-toolbar-title">
-        <span class="details-toolbar-icon">◆</span>
-        <div>
-            <strong>Group Details</strong>
-            <small>View, edit people, or update group information</small>
         </div>
-    </div>
-    <button type="button" class="btn btn-close-details"
-            onclick="closeDetails(<?= $gid ?>)">✕ Close</button>
-</div>
+    </td>
 
+    <td><div class="scheme"><?= e($group['scheme_name'] ?? '') ?></div></td>
 
-
-
-                            <!-- =================================================
-                                 GROUP EDIT
-                                 ================================================= -->
-
-                            <div
-                                class="details-panel"
-                                id="group-edit-<?= $gid ?>"
-                                style="display:none"
-                            >
-
-                                <div class="panel-title">
-                                    ✎ Edit Group #<?= $gid ?>
-                                </div>
-
-                                <div class="panel-body">
-
-                                    <form
-                                        method="POST"
-                                        id="group-save-form-<?= $gid ?>"
-                                        onsubmit="return prepareGroupSave(<?= $gid ?>, this);"
-                                    >
-
-                                        <input
-                                            type="hidden"
-                                            name="grp_id"
-                                            value="<?= $gid ?>"
-                                        >
-
-
-                                        <div class="group-edit">
-
-
-                                            <div class="field">
-
-                                                <label>
-                                                    Company Name
-                                                </label>
-
-                                                <input
-                                                    type="text"
-                                                    name="company_name"
-                                                    value="<?= e(
-                                                        $group[
-                                                            'company_name'
-                                                        ]
-                                                    ) ?>"
-                                                    required
-                                                >
-
-                                            </div>
-
-
-                                            <div class="field">
-
-                                                <label>
-                                                    Scheme Name
-                                                </label>
-
-                                                <input
-                                                    type="text"
-                                                    name="scheme_name"
-                                                    value="<?= e(
-                                                        $group[
-                                                            'scheme_name'
-                                                        ]
-                                                    ) ?>"
-                                                    required
-                                                >
-
-                                            </div>
-
-
+    <td>
+        <div class="line-list">
+<?php foreach (($group['persons'] ?? []) as $person): ?>
+            <div class="line-item">
+                <strong><?= e($person['name'] ?? '') ?><?php if (trim((string)($person['main'] ?? '')) === 'main'): ?> <span class="main-person-marker" title="Main Person">M</span><?php endif; ?></strong>
 <?php
-
-$currentAreas = preg_split(
-    '/\s*,\s*/',
-    (string)($group['area'] ?? '')
-);
-
-$currentAreasNormalized = array_values(array_filter(array_map(
-    static function ($value) {
-        return strtolower(trim((string)$value));
-    },
-    $currentAreas ?: []
-)));
-
+$personNumbers = array_values(array_filter([
+    trim((string)($person['number1'] ?? '')),
+    trim((string)($person['number2'] ?? '')),
+    trim((string)($person['number3'] ?? ''))
+], static function ($v) { return $v !== ''; }));
 ?>
-
-                                            <!--
-                                                IMPORTANT PERFORMANCE OPTIMIZATION:
-                                                Do not render every area checkbox for every group.
-                                                The full area list is created once in JavaScript and
-                                                populated only when this group is actually opened for edit.
-                                            -->
-                                            <div
-                                                class="area-checks area-checks-lazy"
-                                                data-current-areas='<?= e(json_encode($currentAreasNormalized, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)) ?>'
-                                            >
-                                                <div class="area-loading-placeholder">
-                                                    Areas load when Edit is opened…
-                                                </div>
-                                            </div>
-
-                                        </div>
-
-
-                                        <div
-                                            style="margin-top:15px;display:flex;gap:8px"
-                                        >
-
-                                            <button
-                                                type="submit"
-                                                name="update_group"
-                                                value="1"
-                                                class="btn btn-save">
-                                                ✓ Save Group
-                                            </button>
-
-                                            <button
-                                                type="button"
-                                                class="btn btn-cancel"
-                                                onclick="toggleEdit(<?= $gid ?>, false)"
-                                            >
-                                                Cancel
-                                            </button>
-
-                                            <button
-                                                type="button"
-                                                class="btn btn-close-details"
-                                                onclick="closeDetails(<?= $gid ?>)"
-                                            >
-                                                ✕ Close Details
-                                            </button>
-
-                                        </div>
-
-                                    </form>
-
-                                </div>
-
-                            </div>
-
-
-                            <!-- =================================================
-                                 PERSONS
-                                 ================================================= -->
-
-                            <div
-                                class="details-panel"
-                                style="margin-top:18px"
-                            >
-
-                                <div class="panel-title">
-
-                                    👥
-                                    All Persons
-                                    —
-                                    <?= count(
-                                        $group['persons']
-                                    ) ?>
-
-                                </div>
-
-
-                                <div class="panel-body">
-
-                                    <?php foreach ($group['persons'] as $personForm): ?>
-                                        <form
-                                            id="person-form-<?= (int)$personForm['id'] ?>"
-                                            method="POST"
-                                            style="display:none"
-                                        >
-                                            <input type="hidden" name="id" value="<?= (int)$personForm['id'] ?>">
-                                            <input type="hidden" name="grp_id" value="<?= (int)$gid ?>">
-                                        </form>
-                                    <?php endforeach; ?>
-
-                                    <div
-                                        class="person-table-wrap"
-                                    >
-
-                                        <table
-                                            class="person-table"
-                                        >
-
-                                            <thead>
-
-                                                <tr>
-
-                                                    <th>
-                                                        #
-                                                    </th>
-
-                                                    <th>
-                                                        Name
-                                                    </th>
-
-                                                    <th>
-                                                        Number 1
-                                                    </th>
-
-                                                    <th>
-                                                        Number 2
-                                                    </th>
-
-                                                    <th>
-                                                        Number 3
-                                                    </th>
-
-                                                    <th>
-                                                        Relation 1
-                                                    </th>
-
-                                                    <th>
-                                                        Relation 2
-                                                    </th>
-
-                                                    <th>
-                                                        All Relation
-                                                    </th>
-
-                                                    <th>
-                                                        Main
-                                                    </th>
-
-                                                    <th>
-                                                        Action
-                                                    </th>
-
-                                                </tr>
-
-                                            </thead>
-
-
-                                            <tbody>
-
-
-<?php
-
-$personNo =
-    1;
-
-foreach (
-    $group['persons']
-    as $person
-):
-
-?>
-
-
-                                                <tr
-                                                    class="<?= trim(
-                                                        $person['main']
-                                                    ) === 'main'
-                                                        ? 'main-person-row'
-                                                        : ''
-                                                    ?>"
-                                                    data-person-id="<?= (int)$person['id'] ?>"
-                                                >
-
-
-                                                        <td>
-                                                            <?= $personNo ?>
-                                                        </td>
-
-                                                        <td>
-
-                                                            <input
-                                                                class="person-input person-name"
-                                                                type="text"
-                                                                name="name" data-field="name" form="person-form-<?= (int)$person['id'] ?>"
-                                                                value="<?= e(
-                                                                    $person[
-                                                                        'name'
-                                                                    ]
-                                                                ) ?>"
-                                                                required
-                                                            >
-
-                                                        </td>
-
-
-                                                        <td>
-
-                                                            <input
-                                                                class="person-input"
-                                                                type="text"
-                                                                name="number1" data-field="number1" form="person-form-<?= (int)$person['id'] ?>"
-                                                                value="<?= e(
-                                                                    $person[
-                                                                        'number1'
-                                                                    ]
-                                                                ) ?>"
-                                                            >
-
-                                                        </td>
-
-
-                                                        <td>
-
-                                                            <input
-                                                                class="person-input"
-                                                                type="text"
-                                                                name="number2" data-field="number2" form="person-form-<?= (int)$person['id'] ?>"
-                                                                value="<?= e(
-                                                                    $person[
-                                                                        'number2'
-                                                                    ]
-                                                                ) ?>"
-                                                            >
-
-                                                        </td>
-
-
-                                                        <td>
-
-                                                            <input
-                                                                class="person-input"
-                                                                type="text"
-                                                                name="number3" data-field="number3" form="person-form-<?= (int)$person['id'] ?>"
-                                                                value="<?= e(
-                                                                    $person[
-                                                                        'number3'
-                                                                    ]
-                                                                ) ?>"
-                                                            >
-
-                                                        </td>
-
-
-                                                        <td>
-
-                                                            <input
-                                                                class="person-input"
-                                                                type="text"
-                                                                name="relation1" data-field="relation1" form="person-form-<?= (int)$person['id'] ?>"
-                                                                value="<?= e(
-                                                                    $person[
-                                                                        'relation1'
-                                                                    ]
-                                                                ) ?>"
-                                                            >
-
-                                                        </td>
-
-
-                                                        <td>
-
-                                                            <input
-                                                                class="person-input"
-                                                                type="text"
-                                                                name="relation2" data-field="relation2" form="person-form-<?= (int)$person['id'] ?>"
-                                                                value="<?= e(
-                                                                    $person[
-                                                                        'relation2'
-                                                                    ]
-                                                                ) ?>"
-                                                            >
-
-                                                        </td>
-
-
-                                                        <td>
-
-                                                            <input
-                                                                class="person-input"
-                                                                type="text"
-                                                                value="<?= e(
-                                                                    $person[
-                                                                        'relation_all'
-                                                                    ]
-                                                                ) ?>"
-                                                                readonly
-                                                            >
-
-                                                        </td>
-
-
-                                                        <td>
-
-                                                            <select
-                                                                name="main" data-field="main" form="person-form-<?= (int)$person['id'] ?>"
-                                                                class="main-select"
-                                                            >
-
-                                                                <option
-                                                                    value=""
-                                                                    <?= trim(
-                                                                        $person[
-                                                                            'main'
-                                                                        ]
-                                                                    ) === ''
-                                                                        ? 'selected'
-                                                                        : ''
-                                                                    ?>
-                                                                >
-                                                                    —
-                                                                </option>
-
-                                                                <option
-                                                                    value="main"
-                                                                    <?= trim(
-                                                                        $person[
-                                                                            'main'
-                                                                        ]
-                                                                    ) === 'main'
-                                                                        ? 'selected'
-                                                                        : ''
-                                                                    ?>
-                                                                >
-                                                                    Main
-                                                                </option>
-
-                                                            </select>
-
-                                                        </td>
-
-
-                                                        <td>
-
-                                                            <button
-                                                                type="submit"
-                                                                name="update_person"
-                                                                value="1"
-                                                                form="person-form-<?= (int)$person['id'] ?>"
-                                                                class="btn btn-save"
-                                                            >
-                                                                Save
-                                                            </button>
-
-
-                                                            <button
-                                                                type="submit"
-                                                                name="delete_person"
-                                                                value="1"
-                                                                form="person-form-<?= (int)$person['id'] ?>"
-                                                                class="btn btn-delete"
-                                                                onclick="return confirm('Delete this person from Group #<?= $gid ?>?');"
-                                                            >
-                                                                Delete
-                                                            </button>
-
-                                                        </td>
-
-                                                </tr>
-
-
-<?php
-
-$personNo++;
-
-endforeach;
-
-?>
-
-
-                                            </tbody>
-
-                                        </table>
-
-                                    </div>
-
-
-                                    <!-- =================================================
-                                         ADD PERSON
-                                         ================================================= -->
-
-                                    <div class="add-person">
-
-                                        <div
-                                            style="font-weight:800;color:var(--navy);font-size:13px;margin-bottom:11px"
-                                        >
-                                            + Add Person to Group #<?= $gid ?>
-                                        </div>
-
-
-                                        <form
-                                            method="POST"
-                                        >
-
-                                            <input
-                                                type="hidden"
-                                                name="grp_id"
-                                                value="<?= $gid ?>"
-                                            >
-
-
-                                            <div
-                                                class="add-person-grid"
-                                            >
-
-                                                <input
-                                                    type="text"
-                                                    name="new_name"
-                                                    placeholder="Name"
-                                                    required
-                                                >
-
-                                                <input
-                                                    type="text"
-                                                    name="new_number1"
-                                                    placeholder="Number 1"
-                                                >
-
-                                                <input
-                                                    type="text"
-                                                    name="new_number2"
-                                                    placeholder="Number 2"
-                                                >
-
-                                                <input
-                                                    type="text"
-                                                    name="new_number3"
-                                                    placeholder="Number 3"
-                                                >
-
-                                                <input
-                                                    type="text"
-                                                    name="new_relation1"
-                                                    placeholder="Relation 1"
-                                                >
-
-                                                <input
-                                                    type="text"
-                                                    name="new_relation2"
-                                                    placeholder="Relation 2"
-                                                >
-
-                                                <select
-                                                    name="new_main"
-                                                >
-
-                                                    <option
-                                                        value=""
-                                                    >
-                                                        Not Main
-                                                    </option>
-
-                                                    <option
-                                                        value="main"
-                                                    >
-                                                        Main
-                                                    </option>
-
-                                                </select>
-
-                                            </div>
-
-
-                                            <div
-                                                style="margin-top:10px"
-                                            >
-
-                                                <button
-                                                    type="submit"
-                                                    name="add_person"
-                                                    value="1"
-                                                    class="btn btn-add"
-                                                >
-                                                    + Add Person
-                                                </button>
-
-                                            </div>
-
-                                        </form>
-
-                                    </div>
-
-                                </div>
-
-                            </div>
-
-
-                            <!-- =================================================
-                                 MAIN PERSON PANEL
-                                 ================================================= -->
-
-                            <div
-                                class="details-grid"
-                                style="margin-top:18px"
-                            >
-
-                                <div
-                                    class="details-panel"
-                                >
-
-                                    <div class="panel-title">
-                                        ★ Main Persons
-                                    </div>
-
-                                    <div class="panel-body">
-
-<?php if (
-    !empty(
-        $group[
-            'main_persons'
-        ]
-    )
-): ?>
-
-                                        <div class="line-list">
-
-<?php foreach (
-    $group[
-        'main_persons'
-    ] as $mainPerson
-): ?>
-
-                                            <div
-                                                class="line-item main"
-                                            >
-                                                ★
-                                                <?= e(
-                                                    $mainPerson
-                                                ) ?>
-                                            </div>
-
-<?php endforeach; ?>
-
-                                        </div>
-
+<?php if (!empty($personNumbers)): ?>
+                <div style="margin-top:3px;font-size:11px;line-height:1.35;">
+<?php foreach ($personNumbers as $personNumber): ?>
+<?php $waNumber = preg_replace('/[^0-9]/', '', (string)$personNumber); ?>
+<?php if ($waNumber !== ''): ?>
+                    <a href="https://wa.me/<?= e($waNumber) ?>" target="_blank" rel="noopener noreferrer" style="color:#159957;text-decoration:none;font-weight:700;display:inline-block;margin-right:7px;" title="Open WhatsApp"><?= e($personNumber) ?></a>
 <?php else: ?>
-
-                                        <div
-                                            style="color:var(--muted)"
-                                        >
-                                            No main person selected.
-                                        </div>
-
+                    <span style="display:inline-block;margin-right:7px;"><?= e($personNumber) ?></span>
 <?php endif; ?>
-
-                                    </div>
-
-                                </div>
-
-
-                                <div
-                                    class="details-panel"
-                                >
-
-                                    <div class="panel-title">
-                                        🔗 All Relation
-                                    </div>
-
-                                    <div class="panel-body">
-
-<?php if (
-    !empty(
-        $group['relations']
-    )
-): ?>
-
-                                        <div class="line-list">
-
-<?php foreach (
-    $group['relations']
-    as $relation
-): ?>
-
-                                            <div
-                                                class="line-item relation-item"
-                                            >
-                                                <?= e(
-                                                    $relation
-                                                ) ?>
-                                            </div>
-
 <?php endforeach; ?>
-
-                                        </div>
-
-<?php else: ?>
-
-                                        <div
-                                            style="color:var(--muted)"
-                                        >
-                                            No relation history.
-                                        </div>
-
+                </div>
 <?php endif; ?>
+            </div>
+<?php endforeach; ?>
+        </div>
+    </td>
 
-                                    </div>
+    <td>
+        <div class="line-list">
+<?php if (!empty($group['main_persons'])): ?>
+<?php foreach ($group['main_persons'] as $mainPerson): ?>
+            <div class="line-item main">
+                <strong><?= e($mainPerson) ?> <span class="main-person-marker" title="Main Person">M</span></strong>
+                <?php
+                $mainPersonNumbers = [];
+                foreach (($group['persons'] ?? []) as $mainPersonRecord) {
+                    if (trim((string)($mainPersonRecord['main'] ?? '')) === 'main' && strcasecmp(trim((string)($mainPersonRecord['name'] ?? '')), trim((string)$mainPerson)) === 0) {
+                        foreach (['number1', 'number2', 'number3'] as $numberField) {
+                            $candidateNumber = trim((string)($mainPersonRecord[$numberField] ?? ''));
+                            if ($candidateNumber !== '' && !in_array($candidateNumber, $mainPersonNumbers, true)) $mainPersonNumbers[] = $candidateNumber;
+                        }
+                    }
+                }
+                ?>
+                <?php if ($mainPersonNumbers): ?>
+                <div style="margin-top:3px;font-size:11px;line-height:1.35;">
+                    <?php foreach ($mainPersonNumbers as $mainPersonNumber): ?>
+                    <?php $mainPersonWa = preg_replace('/[^0-9]/', '', $mainPersonNumber); ?>
+                    <?php if ($mainPersonWa !== ''): ?>
+                    <a href="https://wa.me/<?= e($mainPersonWa) ?>" target="_blank" rel="noopener noreferrer" style="color:#159957;text-decoration:none;font-weight:700;display:inline-block;margin-right:7px;" title="Open WhatsApp"><?= e($mainPersonNumber) ?></a>
+                    <?php else: ?>
+                    <span style="display:inline-block;margin-right:7px;"><?= e($mainPersonNumber) ?></span>
+                    <?php endif; ?>
+                    <?php endforeach; ?>
+                </div>
+                <?php endif; ?>
+            </div>
+<?php endforeach; ?>
+<?php else: ?>
+            <div class="line-item">—</div>
+<?php endif; ?>
+        </div>
+    </td>
 
-                                </div>
+    <td>
+        <div class="area-list">
+<?php foreach (preg_split('/\s*,\s*/', (string)($group['area'] ?? '')) as $oneArea): ?>
+<?php if (trim($oneArea) !== ''): ?>
+            <span class="area-badge"><?= e(ucwords(trim($oneArea))) ?></span>
+<?php endif; ?>
+<?php endforeach; ?>
+        </div>
+    </td>
 
-                            </div>
+    <td>
+        <div class="actions">
+            <form method="POST" style="display:inline">
+                <input type="hidden" name="grp_id" value="<?= $gid ?>">
+                <input type="hidden" name="star_action" value="<?= !empty($group['is_starred']) ? 'unstar' : 'star' ?>">
+                <button type="submit" class="btn btn-star <?= !empty($group['is_starred']) ? 'starred' : '' ?>" title="<?= !empty($group['is_starred']) ? 'Remove star' : 'Star this group' ?>">
+                    <?= !empty($group['is_starred']) ? '★ Starred' : '☆ Star' ?>
+                </button>
+            </form>
+            <button type="button" class="btn btn-view" onclick="toggleDetails(<?= $gid ?>)">👁 View</button>
+            <button type="button" class="btn btn-edit" onclick="toggleDetails(<?= $gid ?>, true)">✎ Edit</button>
+            <form method="POST" style="display:inline" onsubmit="return confirmDeleteGroup(<?= $gid ?>);">
+                <input type="hidden" name="grp_id" value="<?= $gid ?>">
+                <button type="submit" name="delete_group" value="1" class="btn btn-delete">🗑 Delete</button>
+            </form>
+        </div>
+    </td>
+</tr>
 
-
-                        </div>
-
-                    </td>
-
-                </tr>
-
+<tr class="details-row" id="details-<?= $gid ?>">
+    <td colspan="8">
+        <div class="details-content" id="details-content-<?= $gid ?>">
+            <div style="padding:22px;text-align:center;color:var(--muted)">Loading details…</div>
+        </div>
+    </td>
+</tr>
 
 <?php endforeach; ?>
 
@@ -5448,22 +4592,109 @@ function tdlLiveSearch() {
    ========================================================= */
 
 /* =========================================================
-   VIEW DETAILS
+   LAZY GROUP DETAILS
+   Details are NOT rendered during initial page load.
+   They are fetched only when View/Edit is clicked.
    ========================================================= */
 
-function toggleDetails(
-    grpId,
-    editMode = false
-)
-{
-    const details =
-        document.getElementById(
-            'details-' + grpId
-        );
+var tdlDetailsCache = {};
 
-    if (!details) {
-        return;
-    }
+function tdlEscapeHtml(value) {
+    return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+function tdlWaHtml(number) {
+    var raw = String(number == null ? '' : number).trim();
+    if (!raw) return '';
+    var wa = raw.replace(/[^0-9]/g, '');
+    if (!wa) return '<span>' + tdlEscapeHtml(raw) + '</span>';
+    return '<a href="https://wa.me/' + encodeURIComponent(wa) + '" target="_blank" rel="noopener noreferrer" style="color:#159957;text-decoration:none;font-weight:700;display:inline-block;margin-right:7px" title="Open WhatsApp">' + tdlEscapeHtml(raw) + '</a>';
+}
+
+function tdlNumbersHtml(person) {
+    var numbers = [person.number1, person.number2, person.number3].filter(function(v){ return String(v || '').trim() !== ''; });
+    if (!numbers.length) return '';
+    return '<div style="margin-top:3px;font-size:11px;line-height:1.35">' + numbers.map(tdlWaHtml).join('') + '</div>';
+}
+
+function tdlBuildDetailsHtml(data, editMode) {
+    var gid = Number(data.group.grp_id);
+    var group = data.group;
+    var persons = data.persons || [];
+    var areas = String(group.area || '').split(',').map(function(v){ return v.trim().toLowerCase(); }).filter(Boolean);
+
+    var html = '';
+    html += '<div class="details-toolbar">';
+    html += '<div class="details-toolbar-title"><span class="details-toolbar-icon">◆</span><div><strong>Group Details</strong><small>View, edit people, or update group information</small></div></div>';
+    html += '<button type="button" class="btn btn-close-details" onclick="closeDetails(' + gid + ')">✕ Close</button>';
+    html += '</div>';
+
+    html += '<div class="details-panel" id="group-edit-' + gid + '" style="display:' + (editMode ? 'block' : 'none') + '">';
+    html += '<div class="panel-title">✎ Edit Group #' + gid + '</div><div class="panel-body">';
+    html += '<form method="POST" id="group-save-form-' + gid + '" onsubmit="return prepareGroupSave(' + gid + ', this);">';
+    html += '<input type="hidden" name="grp_id" value="' + gid + '">';
+    html += '<div class="group-edit">';
+    html += '<div class="field"><label>Company Name</label><input type="text" name="company_name" value="' + tdlEscapeHtml(group.company_name || '') + '" required></div>';
+    html += '<div class="field"><label>Scheme Name</label><input type="text" name="scheme_name" value="' + tdlEscapeHtml(group.scheme_name || '') + '" required></div>';
+    html += '<div class="area-checks">';
+    (window.tdlAreaOptions || []).forEach(function(area, index) {
+        var checked = areas.indexOf(String(area).trim().toLowerCase()) !== -1 ? ' checked' : '';
+        var id = 'edit_' + gid + '_' + index;
+        html += '<div class="area-check"><input type="checkbox" id="' + id + '" name="areas[]" value="' + tdlEscapeHtml(area) + '"' + checked + '><label for="' + id + '">' + tdlEscapeHtml(String(area).replace(/\b\w/g,function(c){return c.toUpperCase();})) + '</label></div>';
+    });
+    html += '</div></div>';
+    html += '<div style="margin-top:15px;display:flex;gap:8px"><button type="submit" name="update_group" value="1" class="btn btn-save">✓ Save Group</button><button type="button" class="btn btn-cancel" onclick="toggleEdit(' + gid + ', false)">Cancel</button><button type="button" class="btn btn-close-details" onclick="closeDetails(' + gid + ')">✕ Close Details</button></div>';
+    html += '</form></div></div>';
+
+    html += '<div class="details-panel" style="margin-top:18px"><div class="panel-title">👥 All Persons — ' + persons.length + '</div><div class="panel-body">';
+    persons.forEach(function(p) {
+        var pid = Number(p.id);
+        html += '<form id="person-form-' + pid + '" method="POST" style="display:none"><input type="hidden" name="id" value="' + pid + '"><input type="hidden" name="grp_id" value="' + gid + '"></form>';
+    });
+    html += '<div class="person-table-wrap"><table class="person-table"><thead><tr><th>#</th><th>Name</th><th>Number 1</th><th>Number 2</th><th>Number 3</th><th>Relation 1</th><th>Relation 2</th><th>All Relation</th><th>Main</th><th>Action</th></tr></thead><tbody>';
+    persons.forEach(function(p, i) {
+        var pid = Number(p.id);
+        var main = String(p.main || '').trim() === 'main';
+        html += '<tr class="' + (main ? 'main-person-row' : '') + '" data-person-id="' + pid + '">';
+        html += '<td>' + (i + 1) + '</td>';
+        [['name',p.name],['number1',p.number1],['number2',p.number2],['number3',p.number3],['relation1',p.relation1],['relation2',p.relation2]].forEach(function(pair){
+            html += '<td><input class="person-input ' + (pair[0] === 'name' ? 'person-name' : '') + '" type="text" name="' + pair[0] + '" data-field="' + pair[0] + '" form="person-form-' + pid + '" value="' + tdlEscapeHtml(pair[1] || '') + '"' + (pair[0] === 'name' ? ' required' : '') + '></td>';
+        });
+        html += '<td><input class="person-input" type="text" value="' + tdlEscapeHtml(p.relation_all || '') + '" readonly></td>';
+        html += '<td><select name="main" data-field="main" form="person-form-' + pid + '" class="main-select"><option value=""' + (!main ? ' selected' : '') + '>—</option><option value="main"' + (main ? ' selected' : '') + '>Main</option></select></td>';
+        html += '<td><button type="submit" name="update_person" value="1" form="person-form-' + pid + '" class="btn btn-save">Save</button> <button type="submit" name="delete_person" value="1" form="person-form-' + pid + '" class="btn btn-delete" onclick="return confirm(\'Delete this person from Group #' + gid + '?\');">Delete</button></td>';
+        html += '</tr>';
+    });
+    html += '</tbody></table></div>';
+    html += '<div class="add-person"><div style="font-weight:800;color:var(--navy);font-size:13px;margin-bottom:11px">+ Add Person to Group #' + gid + '</div>';
+    html += '<form method="POST"><input type="hidden" name="grp_id" value="' + gid + '"><div class="add-person-grid"><input type="text" name="new_name" placeholder="Name" required><input type="text" name="new_number1" placeholder="Number 1"><input type="text" name="new_number2" placeholder="Number 2"><input type="text" name="new_number3" placeholder="Number 3"><input type="text" name="new_relation1" placeholder="Relation 1"><input type="text" name="new_relation2" placeholder="Relation 2"><select name="new_main"><option value="">Not Main</option><option value="main">Main</option></select></div><div style="margin-top:10px"><button type="submit" name="add_person" value="1" class="btn btn-add">+ Add Person</button></div></form></div></div></div>';
+
+    html += '<div class="details-grid" style="margin-top:18px"><div class="details-panel"><div class="panel-title">★ Main Persons</div><div class="panel-body">';
+    if (data.main_persons && data.main_persons.length) {
+        html += '<div class="line-list">' + data.main_persons.map(function(n){
+            var matchingMain = persons.filter(function(p){ return String(p.main || '').trim() === 'main' && String(p.name || '').trim().toLowerCase() === String(n || '').trim().toLowerCase(); });
+            var numbers = [];
+            matchingMain.forEach(function(p){ ['number1','number2','number3'].forEach(function(k){ var v = String(p[k] || '').trim(); if (v && numbers.indexOf(v) === -1) numbers.push(v); }); });
+            var numberHtml = numbers.map(function(number){ var digits = number.replace(/[^0-9]/g, ''); return digits ? '<a href="https://wa.me/' + encodeURIComponent(digits) + '" target="_blank" rel="noopener noreferrer" style="color:#159957;text-decoration:none;font-weight:700;display:inline-block;margin-right:7px" title="Open WhatsApp">' + tdlEscapeHtml(number) + '</a>' : '<span>' + tdlEscapeHtml(number) + '</span>'; }).join('');
+            return '<div class="line-item main">★ ' + tdlEscapeHtml(n) + ' <span class="main-person-marker" title="Main Person">M</span>' + (numberHtml ? '<div style="margin-top:3px;font-size:11px;line-height:1.35">' + numberHtml + '</div>' : '') + '</div>';
+        }).join('') + '</div>';
+    } else html += '<div style="color:var(--muted)">No main person selected.</div>';
+    html += '</div></div><div class="details-panel"><div class="panel-title">🔗 All Relation</div><div class="panel-body">';
+    if (data.relations && data.relations.length) html += '<div class="line-list">' + data.relations.map(function(n){ return '<div class="line-item relation-item">' + tdlEscapeHtml(n) + '</div>'; }).join('') + '</div>'; else html += '<div style="color:var(--muted)">No relation history.</div>';
+    html += '</div></div></div>';
+
+    return html;
+}
+
+function toggleDetails(grpId, editMode) {
+    var details = document.getElementById('details-' + grpId);
+    var content = document.getElementById('details-content-' + grpId);
+    if (!details || !content) return;
 
     if (details.classList.contains('open')) {
         closeDetails(grpId);
@@ -5471,150 +4702,35 @@ function toggleDetails(
     }
 
     details.classList.add('open');
+    content.innerHTML = '<div style="padding:22px;text-align:center;color:var(--muted)">Loading details…</div>';
 
-    toggleEdit(
-        grpId,
-        editMode
-    );
-
-    setTimeout(
-        function()
-        {
-            details.scrollIntoView({
-                behavior: 'smooth',
-                block: 'nearest'
-            });
-        },
-        80
-    );
-}
-
-
-/* =========================================================
-   CLOSE GROUP DETAILS
-   ========================================================= */
-
-function closeDetails(
-    grpId
-)
-{
-    const details =
-        document.getElementById(
-            'details-' + grpId
-        );
-
-    if (!details) {
+    if (tdlDetailsCache[grpId]) {
+        content.innerHTML = tdlBuildDetailsHtml(tdlDetailsCache[grpId], !!editMode);
         return;
     }
 
-    toggleEdit(
-        grpId,
-        false
-    );
-
-    details.classList.remove(
-        'open'
-    );
-}
-
-
-/* =========================================================
-   EDIT MODE
-   ========================================================= */
-
-function tdlBuildEditAreas(edit)
-{
-    if (!edit || edit.dataset.areasLoaded === '1') {
-        return;
-    }
-
-    const container = edit.querySelector('.area-checks-lazy');
-    if (!container) {
-        edit.dataset.areasLoaded = '1';
-        return;
-    }
-
-    let currentAreas = [];
-
-    try {
-        currentAreas = JSON.parse(
-            container.getAttribute('data-current-areas') || '[]'
-        );
-    } catch (e) {
-        currentAreas = [];
-    }
-
-    const currentSet = new Set(
-        currentAreas.map(function(value) {
-            return String(value || '').trim().toLowerCase();
+    fetch(window.location.pathname + '?ajax_group=' + encodeURIComponent(grpId), {cache:'no-store'})
+        .then(function(response){ if (!response.ok) throw new Error('HTTP ' + response.status); return response.json(); })
+        .then(function(data){
+            if (!data || !data.ok) throw new Error(data && data.error ? data.error : 'Unable to load group');
+            tdlDetailsCache[grpId] = data;
+            if (details.classList.contains('open')) content.innerHTML = tdlBuildDetailsHtml(data, !!editMode);
         })
-    );
-
-    const fragment = document.createDocumentFragment();
-
-    if (!Array.isArray(window.tdlAreaOptions) || !window.tdlAreaOptions.length) {
-        container.innerHTML = '<div style="color:var(--muted);font-size:11px">No areas available.</div>';
-        edit.dataset.areasLoaded = '1';
-        return;
-    }
-
-    const gid = edit.id.replace('group-edit-', '');
-
-    window.tdlAreaOptions.forEach(function(area, index) {
-        const cleanArea = String(area || '').trim();
-        if (!cleanArea) return;
-
-        const wrapper = document.createElement('div');
-        wrapper.className = 'area-check';
-
-        const input = document.createElement('input');
-        input.type = 'checkbox';
-        input.name = 'areas[]';
-        input.value = cleanArea;
-        input.id = 'edit_' + gid + '_area_' + index;
-        input.checked = currentSet.has(cleanArea.toLowerCase());
-
-        const label = document.createElement('label');
-        label.htmlFor = input.id;
-        label.textContent = cleanArea
-            .toLowerCase()
-            .replace(/\b\w/g, function(letter) { return letter.toUpperCase(); });
-
-        wrapper.appendChild(input);
-        wrapper.appendChild(label);
-        fragment.appendChild(wrapper);
-    });
-
-    container.replaceChildren(fragment);
-    edit.dataset.areasLoaded = '1';
+        .catch(function(error){
+            content.innerHTML = '<div style="padding:22px;color:#b42318">Unable to load details. Please try again.</div>';
+            console.error(error);
+        });
 }
 
+function closeDetails(grpId) {
+    var details = document.getElementById('details-' + grpId);
+    if (!details) return;
+    details.classList.remove('open');
+}
 
-function toggleEdit(
-    grpId,
-    show
-)
-{
-
-    const edit =
-        document.getElementById(
-            'group-edit-' + grpId
-        );
-
-
-    if (!edit) {
-        return;
-    }
-
-    if (show) {
-        tdlBuildEditAreas(edit);
-    }
-
-    edit.style.display =
-        show
-            ? 'block'
-            : 'none';
-
+function toggleEdit(grpId, show) {
+    var edit = document.getElementById('group-edit-' + grpId);
+    if (edit) edit.style.display = show ? 'block' : 'none';
 }
 
 
@@ -5716,6 +4832,121 @@ function prepareGroupSave(gid, form)
     /* TRUE = perform the normal PHP POST. */
     return true;
 }
+
+
+/* =========================================================
+   PRESERVE DIRECTORY STATE AFTER SAVING/UPDATING
+   Keeps search, selected areas, star filter, open group details,
+   and the user's scroll position across normal PHP form submits.
+   This does not change the existing save/update logic.
+   ========================================================= */
+(function () {
+    var STATE_KEY = 'tdl_group_directory_state_v1';
+
+    function getState() {
+        var search = document.getElementById('groupSearch');
+        var star = document.getElementById('starFilter');
+        var areas = [];
+        document.querySelectorAll('#areaSelectMenu input[name="area_filter[]"]:checked').forEach(function (check) {
+            areas.push(check.value);
+        });
+
+        var openGroups = [];
+        document.querySelectorAll('#groupsTable tr.details-row.open').forEach(function (row) {
+            var match = row.id.match(/^details-(\d+)$/);
+            if (match) openGroups.push(Number(match[1]));
+        });
+
+        var editGroups = [];
+        document.querySelectorAll('[id^="group-edit-"]').forEach(function (panel) {
+            if (panel.style.display !== 'none') {
+                var match = panel.id.match(/^group-edit-(\d+)$/);
+                if (match) editGroups.push(Number(match[1]));
+            }
+        });
+
+        return {
+            search: search ? search.value : '',
+            starFilter: star ? star.value : '',
+            areas: areas,
+            openGroups: openGroups,
+            editGroups: editGroups,
+            scrollY: window.scrollY || window.pageYOffset || 0,
+            savedAt: Date.now()
+        };
+    }
+
+    function saveState() {
+        try {
+            sessionStorage.setItem(STATE_KEY, JSON.stringify(getState()));
+        } catch (e) {
+            /* Storage may be disabled; normal form submission still works. */
+        }
+    }
+
+    /* Save immediately before any form navigates/reloads the page. */
+    document.addEventListener('submit', function () {
+        saveState();
+    }, true);
+
+    /* Also retain state when using the Group sort link. */
+    document.querySelectorAll('.group-sort-header a').forEach(function (link) {
+        link.addEventListener('click', saveState);
+    });
+
+    function restoreState() {
+        var raw = null;
+        try {
+            raw = sessionStorage.getItem(STATE_KEY);
+            if (raw) sessionStorage.removeItem(STATE_KEY); // one-time restore only
+        } catch (e) {
+            return;
+        }
+        if (!raw) return;
+
+        var state;
+        try { state = JSON.parse(raw); } catch (e) { return; }
+        if (!state || !state.savedAt || Date.now() - state.savedAt > 10 * 60 * 1000) return;
+
+        var search = document.getElementById('groupSearch');
+        var star = document.getElementById('starFilter');
+        if (search && typeof state.search === 'string') search.value = state.search;
+        if (star && typeof state.starFilter === 'string') star.value = state.starFilter;
+
+        var selected = Array.isArray(state.areas) ? state.areas : [];
+        document.querySelectorAll('#areaSelectMenu input[name="area_filter[]"]').forEach(function (check) {
+            check.checked = selected.indexOf(check.value) !== -1;
+        });
+
+        if (typeof tdlUpdateAreaButton === 'function') tdlUpdateAreaButton();
+        if (typeof tdlLiveSearch === 'function') tdlLiveSearch();
+
+        /* Restore previously expanded group details without losing current filters. */
+        var openGroups = Array.isArray(state.openGroups) ? state.openGroups : [];
+        var editGroups = Array.isArray(state.editGroups) ? state.editGroups : [];
+        openGroups.forEach(function (gid) {
+            var row = document.getElementById('details-' + Number(gid));
+            if (!row) return; // e.g. the group was deleted
+            if (typeof toggleDetails === 'function') {
+                toggleDetails(Number(gid), editGroups.indexOf(Number(gid)) !== -1);
+            }
+        });
+
+        /* Restore scroll after details begin loading and the page has laid out. */
+        requestAnimationFrame(function () {
+            requestAnimationFrame(function () {
+                window.scrollTo(0, Math.max(0, Number(state.scrollY) || 0));
+            });
+        });
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', restoreState, { once: true });
+    } else {
+        restoreState();
+    }
+})();
+
 </script>
 
 
