@@ -294,6 +294,17 @@ body{
     <div class="arrow">›</div>
 </a>
 
+
+<a class="card blue" href="master_data.php">
+    <div class="card-icon">⌕</div>
+    <div class="card-content">
+        <span class="card-number">11. Master Data</span>
+        <h3>Data in The Expandable Way</h3>
+        <!-- <p>Open complete group information and manage the internal group details.</p> -->
+    </div>
+    <div class="arrow">›</div>
+</a>
+
 </section>
 
 <div class="footer">THE DIVINE LANDS &nbsp;•&nbsp; MANAGEMENT SYSTEM</div>
