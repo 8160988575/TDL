@@ -79,7 +79,8 @@ $area_options = [
     'Bhat',
     'Motera',
     'AMedium',
-    'ABig'
+    'ABig',
+    'Dehgam'
 
 ];
 

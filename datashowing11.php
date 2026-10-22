@@ -48,7 +48,7 @@ if (isset($_GET['ajax_group'])) {
         exit;
     }
 
-    $stmt = mysqli_prepare($con, "SELECT id, grp_id, company_name, scheme_name, name, number1, number2, number3, relation1, relation2, relation_all, `main`, area FROM data WHERE grp_id = ? ORDER BY id ASC");
+    $stmt = mysqli_prepare($con, "SELECT id, grp_id, company_name, scheme_name, name, email, number1, number2, number3, relation1, relation2, relation_all, `main`, area FROM data WHERE grp_id = ? ORDER BY id ASC");
     if (!$stmt) {
         http_response_code(500);
         echo json_encode(['ok'=>false,'error'=>mysqli_error($con)]);
@@ -849,6 +849,7 @@ if (
                     UPDATE data
                     SET
                         name = ?,
+                        email = ?,
                         number1 = ?,
                         number2 = ?,
                         number3 = ?,
@@ -888,6 +889,10 @@ if (
                         );
                     }
 
+                    $pEmail = trim((string)(
+                        $personData['email'] ?? ''
+                    ));
+
                     $pNumber1 = trim((string)(
                         $personData['number1'] ?? ''
                     ));
@@ -918,8 +923,9 @@ if (
 
                     mysqli_stmt_bind_param(
                         $personUpdate,
-                        'sssssssii',
+                        'ssssssssii',
                         $pName,
+                        $pEmail,
                         $pNumber1,
                         $pNumber2,
                         $pNumber3,
@@ -1023,6 +1029,10 @@ if (
             $_POST['name'] ?? ''
         );
 
+    $email = trim((string)(
+            $_POST['email'] ?? ''
+        ));
+
     $number1 = trim((string)(
             $_POST['number1'] ?? ''
         ));
@@ -1073,6 +1083,7 @@ if (
                 UPDATE data
                 SET
                     name = ?,
+                    email = ?,
                     number1 = ?,
                     number2 = ?,
                     number3 = ?,
@@ -1093,8 +1104,9 @@ if (
 
             mysqli_stmt_bind_param(
                 $stmt,
-                'sssssssii',
+                'ssssssssii',
                 $name,
+                $email,
                 $number1,
                 $number2,
                 $number3,
@@ -1234,6 +1246,10 @@ if (
         trim(
             $_POST['new_name'] ?? ''
         );
+
+    $email = trim((string)(
+            $_POST['new_email'] ?? ''
+        ));
 
     $number1 = trim((string)(
             $_POST['new_number1'] ?? ''
@@ -1440,6 +1456,7 @@ if (
                             company_name,
                             scheme_name,
                             name,
+                            email,
                             number1,
                             number2,
                             number3,
@@ -1451,6 +1468,7 @@ if (
                         )
                         VALUES
                         (
+                            ?,
                             ?,
                             ?,
                             ?,
@@ -1476,11 +1494,12 @@ if (
 
                     mysqli_stmt_bind_param(
                         $insertStmt,
-                        'isssssssssss',
+                        'issssssssssss',
                         $grp_id,
                         $company,
                         $scheme,
                         $name,
+                        $email,
                         $number1,
                         $number2,
                         $number3,
@@ -1580,6 +1599,7 @@ $combinedSql = "
         d.company_name,
         d.scheme_name,
         d.name,
+        d.email,
         d.number1,
         d.number2,
         d.number3,
@@ -4199,6 +4219,9 @@ $searchText = strtolower(implode(' ', $searchParts));
 <?php foreach (($group['persons'] ?? []) as $person): ?>
             <div class="line-item">
                 <strong><?= e($person['name'] ?? '') ?><?php if (trim((string)($person['main'] ?? '')) === 'main'): ?> <span class="main-person-marker" title="Main Person">M</span><?php endif; ?></strong>
+<?php if (trim((string)($person['email'] ?? '')) !== ''): ?>
+                <div style="margin-top:3px;font-size:11px;line-height:1.35;overflow-wrap:anywhere;color:#2878d4;"><?= e($person['email']) ?></div>
+<?php endif; ?>
 <?php
 $personNumbers = array_values(array_filter([
     trim((string)($person['number1'] ?? '')),
@@ -4230,9 +4253,12 @@ $personNumbers = array_values(array_filter([
             <div class="line-item main">
                 <strong><?= e($mainPerson) ?> <span class="main-person-marker" title="Main Person">M</span></strong>
                 <?php
+                $mainPersonEmails = [];
                 $mainPersonNumbers = [];
                 foreach (($group['persons'] ?? []) as $mainPersonRecord) {
                     if (trim((string)($mainPersonRecord['main'] ?? '')) === 'main' && strcasecmp(trim((string)($mainPersonRecord['name'] ?? '')), trim((string)$mainPerson)) === 0) {
+                        $candidateEmail = trim((string)($mainPersonRecord['email'] ?? ''));
+                        if ($candidateEmail !== '' && !in_array($candidateEmail, $mainPersonEmails, true)) $mainPersonEmails[] = $candidateEmail;
                         foreach (['number1', 'number2', 'number3'] as $numberField) {
                             $candidateNumber = trim((string)($mainPersonRecord[$numberField] ?? ''));
                             if ($candidateNumber !== '' && !in_array($candidateNumber, $mainPersonNumbers, true)) $mainPersonNumbers[] = $candidateNumber;
@@ -4240,6 +4266,9 @@ $personNumbers = array_values(array_filter([
                     }
                 }
                 ?>
+                <?php if ($mainPersonEmails): ?>
+                <div style="margin-top:3px;font-size:11px;line-height:1.35;overflow-wrap:anywhere;color:#2878d4;"><?= e(implode(', ', $mainPersonEmails)) ?></div>
+                <?php endif; ?>
                 <?php if ($mainPersonNumbers): ?>
                 <div style="margin-top:3px;font-size:11px;line-height:1.35;">
                     <?php foreach ($mainPersonNumbers as $mainPersonNumber): ?>
@@ -4688,13 +4717,13 @@ function tdlBuildDetailsHtml(data, editMode) {
         var pid = Number(p.id);
         html += '<form id="person-form-' + pid + '" method="POST" style="display:none"><input type="hidden" name="id" value="' + pid + '"><input type="hidden" name="grp_id" value="' + gid + '"></form>';
     });
-    html += '<div class="person-table-wrap"><table class="person-table"><thead><tr><th>#</th><th>Name</th><th>Number 1</th><th>Number 2</th><th>Number 3</th><th>Relation 1</th><th>Relation 2</th><th>All Relation</th><th>Main</th><th>Action</th></tr></thead><tbody>';
+    html += '<div class="person-table-wrap"><table class="person-table"><thead><tr><th>#</th><th>Name</th><th>Email</th><th>Number 1</th><th>Number 2</th><th>Number 3</th><th>Relation 1</th><th>Relation 2</th><th>All Relation</th><th>Main</th><th>Action</th></tr></thead><tbody>';
     persons.forEach(function(p, i) {
         var pid = Number(p.id);
         var main = String(p.main || '').trim() === 'main';
         html += '<tr class="' + (main ? 'main-person-row' : '') + '" data-person-id="' + pid + '">';
         html += '<td>' + (i + 1) + '</td>';
-        [['name',p.name],['number1',p.number1],['number2',p.number2],['number3',p.number3],['relation1',p.relation1],['relation2',p.relation2]].forEach(function(pair){
+        [['name',p.name],['email',p.email],['number1',p.number1],['number2',p.number2],['number3',p.number3],['relation1',p.relation1],['relation2',p.relation2]].forEach(function(pair){
             html += '<td><input class="person-input ' + (pair[0] === 'name' ? 'person-name' : '') + '" type="text" name="' + pair[0] + '" data-field="' + pair[0] + '" form="person-form-' + pid + '" value="' + tdlEscapeHtml(pair[1] || '') + '"' + (pair[0] === 'name' ? ' required' : '') + '></td>';
         });
         html += '<td><input class="person-input" type="text" value="' + tdlEscapeHtml(p.relation_all || '') + '" readonly></td>';
@@ -4704,16 +4733,22 @@ function tdlBuildDetailsHtml(data, editMode) {
     });
     html += '</tbody></table></div>';
     html += '<div class="add-person"><div style="font-weight:800;color:var(--navy);font-size:13px;margin-bottom:11px">+ Add Person to Group #' + gid + '</div>';
-    html += '<form method="POST"><input type="hidden" name="grp_id" value="' + gid + '"><div class="add-person-grid"><input type="text" name="new_name" placeholder="Name" required><input type="text" name="new_number1" placeholder="Number 1"><input type="text" name="new_number2" placeholder="Number 2"><input type="text" name="new_number3" placeholder="Number 3"><input type="text" name="new_relation1" placeholder="Relation 1"><input type="text" name="new_relation2" placeholder="Relation 2"><select name="new_main"><option value="">Not Main</option><option value="main">Main</option></select></div><div style="margin-top:10px"><button type="submit" name="add_person" value="1" class="btn btn-add">+ Add Person</button></div></form></div></div></div>';
+    html += '<form method="POST"><input type="hidden" name="grp_id" value="' + gid + '"><div class="add-person-grid"><input type="text" name="new_name" placeholder="Name" required><input type="text" name="new_email" placeholder="Email Address"><input type="text" name="new_number1" placeholder="Number 1"><input type="text" name="new_number2" placeholder="Number 2"><input type="text" name="new_number3" placeholder="Number 3"><input type="text" name="new_relation1" placeholder="Relation 1"><input type="text" name="new_relation2" placeholder="Relation 2"><select name="new_main"><option value="">Not Main</option><option value="main">Main</option></select></div><div style="margin-top:10px"><button type="submit" name="add_person" value="1" class="btn btn-add">+ Add Person</button></div></form></div></div></div>';
 
     html += '<div class="details-grid" style="margin-top:18px"><div class="details-panel"><div class="panel-title">★ Main Persons</div><div class="panel-body">';
     if (data.main_persons && data.main_persons.length) {
         html += '<div class="line-list">' + data.main_persons.map(function(n){
             var matchingMain = persons.filter(function(p){ return String(p.main || '').trim() === 'main' && String(p.name || '').trim().toLowerCase() === String(n || '').trim().toLowerCase(); });
             var numbers = [];
-            matchingMain.forEach(function(p){ ['number1','number2','number3'].forEach(function(k){ var v = String(p[k] || '').trim(); if (v && numbers.indexOf(v) === -1) numbers.push(v); }); });
+            var emails = [];
+            matchingMain.forEach(function(p){
+                ['number1','number2','number3'].forEach(function(k){ var v = String(p[k] || '').trim(); if (v && numbers.indexOf(v) === -1) numbers.push(v); });
+                var email = String(p.email || '').trim();
+                if (email && emails.indexOf(email) === -1) emails.push(email);
+            });
+            var emailHtml = emails.length ? '<div style="margin-top:3px;font-size:11px;line-height:1.35;overflow-wrap:anywhere;color:#2878d4">' + emails.map(tdlEscapeHtml).join(', ') + '</div>' : '';
             var numberHtml = numbers.map(function(number){ var digits = number.replace(/[^0-9]/g, ''); return digits ? '<a href="https://wa.me/' + encodeURIComponent(digits) + '" target="_blank" rel="noopener noreferrer" style="color:#159957;text-decoration:none;font-weight:700;display:inline-block;margin-right:7px" title="Open WhatsApp">' + tdlEscapeHtml(number) + '</a>' : '<span>' + tdlEscapeHtml(number) + '</span>'; }).join('');
-            return '<div class="line-item main">★ ' + tdlEscapeHtml(n) + ' <span class="main-person-marker" title="Main Person">M</span>' + (numberHtml ? '<div style="margin-top:3px;font-size:11px;line-height:1.35">' + numberHtml + '</div>' : '') + '</div>';
+            return '<div class="line-item main">★ ' + tdlEscapeHtml(n) + ' <span class="main-person-marker" title="Main Person">M</span>' + emailHtml + (numberHtml ? '<div style="margin-top:3px;font-size:11px;line-height:1.35">' + numberHtml + '</div>' : '') + '</div>';
         }).join('') + '</div>';
     } else html += '<div style="color:var(--muted)">No main person selected.</div>';
     html += '</div></div><div class="details-panel"><div class="panel-title">🔗 All Relation</div><div class="panel-body">';

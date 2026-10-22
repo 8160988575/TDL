@@ -153,7 +153,7 @@ body{margin:0;color:var(--ink);font:15px/1.5 Inter,system-ui,-apple-system,"Sego
 .hero:before,.hero:after{content:"";position:absolute;border:1px solid #ffffff30;border-radius:50%;pointer-events:none}
 .hero:before{width:350px;height:350px;right:65px;top:-245px;box-shadow:0 0 0 28px #ffffff0c,0 0 0 58px #ffffff0a}
 .hero:after{width:210px;height:210px;right:-80px;bottom:-155px}
-.brandline{font-size:11px;letter-spacing:.22em;font-weight:900;color:#ffdf82}.hero h1{font-size:clamp(27px,3.5vw,42px);letter-spacing:-.04em;line-height:1.08;margin:12px 0 9px}.hero p{margin:0;color:#d9efff;max-width:620px}.hero-mark{z-index:1;width:94px;height:82px;border:1px solid #ffdc7d;border-radius:18px;display:grid;place-items:center;color:#ffdc7d;font-size:24px;font-weight:900;letter-spacing:.1em;background:#ffffff10;flex-shrink:0;padding:8px}.hero-mark img{max-width:100%;max-height:100%;object-fit:contain}
+.brandline{font-size:11px;letter-spacing:.22em;font-weight:900;color:#ffdf82}.hero h1{font-size:clamp(27px,3.5vw,42px);letter-spacing:-.04em;line-height:1.08;margin:12px 0 9px}.hero p{margin:0;color:#d9efff;max-width:620px}.hero-mark{z-index:1;width:94px;height:120px;border-radius:18px;display:grid;place-items:center;font-size:24px;font-weight:900;letter-spacing:.1em;flex-shrink:0;padding:8px}.hero-mark img{max-width:100%;max-height:100%;object-fit:contain}
 .monogram{width:42px;height:38px;border:1px solid #ffdc7d;color:#ffdc7d;border-radius:8px;display:grid;place-items:center;overflow:hidden;flex-shrink:0}.monogram img{max-width:100%;max-height:100%;object-fit:contain}.monogram span{font-size:10px;font-weight:900}
 .jv-highlight{display:inline-flex;align-items:center;gap:9px;align-self:flex-start;max-width:100%;flex-wrap:wrap;background:linear-gradient(100deg,#ffdb67,#ffb600);color:#173a6a!important;padding:12px 16px;border:1px solid #fff0a8;border-radius:9px;font-size:clamp(12px,1.5vw,16px);line-height:1.25;font-weight:1000;box-shadow:0 7px 22px #ffbf2060;letter-spacing:.08em!important;text-shadow:0 1px #ffffff55}
 .jv-dot{width:9px;height:9px;flex:0 0 9px;border-radius:50%;background:#0759a7;box-shadow:0 0 0 4px #0759a71b}
@@ -191,9 +191,16 @@ input:focus,select:focus,textarea:focus{border-color:#1396cb;box-shadow:0 0 0 4p
   <div>
     <div class="brandline">THE DIVINE LANDS · LAND OPPORTUNITY STUDIO</div>
     <h1>Present land like an investment.</h1>
+
+
+    
     <p>Create a vibrant, client-ready property poster with your logo, and a clean WhatsApp message with a clickable Google Maps link.</p>
   </div>
-  <div class="hero-mark" aria-label="The Divine Lands logo"><img src="logo.png" alt="The Divine Lands logo" onerror="this.style.display='none';this.nextElementSibling.style.display='grid'"><span style="display:none">DL</span></div>
+  <div class="hero-mark" aria-label="The Divine Lands logo"><img src="logo.png" alt="The Divine Lands logo" style="border-radius:15px" onerror="this.style.display='none';this.nextElementSibling.style.display='grid'"><span style="display:none">DL</span>
+     <a href="index.php" class="panel-link" style="font-size:12px;letter-spacing:.1em;color:#fff;font-weight:900;text-decoration:none;margin:6px;display:inline-block;border:3px solid #ffffff50;padding:6px 10px;border-radius:9px;transition:.18s">
+            ALL
+        </a>
+        </div>
 </header>
 
 <?php if ($errors): ?><div class="errors"><strong>Please check:</strong><ul><?php foreach ($errors as $error): ?><li><?= e($error) ?></li><?php endforeach; ?></ul></div><?php endif; ?>

@@ -177,7 +177,7 @@ body{
 
 <section class="cards">
 
-<a class="card green" href="dataadding.php">
+<a class="card green" href="dataaddingemail.php">
     <div class="card-icon">＋</div>
     <div class="card-content">
         <span class="card-number">01 · Management</span>
@@ -187,7 +187,7 @@ body{
     <div class="arrow">›</div>
 </a>
 
-<a class="card blue" href="datashowing.php">
+<a class="card blue" href="datashowing11.php">
     <div class="card-icon">⌕</div>
     <div class="card-content">
         <span class="card-number">02 · Details</span>
@@ -284,7 +284,7 @@ body{
 </a>
 
 
-<a class="card blue" href="land_formatter2.php">
+<a class="card blue" href="land_formatter5.php">
     <div class="card-icon">⌕</div>
     <div class="card-content">
         <span class="card-number">10 · Format_Land</span>
@@ -295,11 +295,22 @@ body{
 </a>
 
 
-<a class="card blue" href="master_data.php">
+<a class="card blue" href="master_data2.php">
     <div class="card-icon">⌕</div>
     <div class="card-content">
         <span class="card-number">11. Master Data</span>
         <h3>Data in The Expandable Way</h3>
+        <!-- <p>Open complete group information and manage the internal group details.</p> -->
+    </div>
+    <div class="arrow">›</div>
+</a>
+
+
+<a class="card blue" href="daily_priority_lands.php">
+    <div class="card-icon">⌕</div>
+    <div class="card-content">
+        <span class="card-number">12. Daily Priority Lands</span>
+        <h3>Land priorities</h3>
         <!-- <p>Open complete group information and manage the internal group details.</p> -->
     </div>
     <div class="arrow">›</div>

@@ -5056,7 +5056,7 @@ $personNumbers = array_values(array_filter([
 <?php foreach ($personNumbers as $personNumber): ?>
 <?php $waNumber = preg_replace('/[^0-9]/', '', (string)$personNumber); ?>
 <?php if ($waNumber !== ''): ?>
-                    <a href="https://wa.me/<?= e($waNumber) ?>" target="_blank" rel="noopener noreferrer" style="color:#159957;text-decoration:none;font-weight:700;display:inline-block;margin-right:7px;" title="Open WhatsApp"><?= e($personNumber) ?></a>
+                    <a href="https://wa.me/91<?= e($waNumber) ?>" target="_blank" rel="noopener noreferrer" style="color:#159957;text-decoration:none;font-weight:700;display:inline-block;margin-right:7px;" title="Open WhatsApp"><?= e($personNumber) ?></a>
 <?php else: ?>
                     <span style="display:inline-block;margin-right:7px;"><?= e($personNumber) ?></span>
 <?php endif; ?>
@@ -5106,7 +5106,7 @@ $mainNumbers = $mainMatch
 <?php $mainWaNumber = preg_replace('/[^0-9]/', '', (string)$mainNumber); ?>
 <?php if ($mainWaNumber !== ''): ?>
                     <a
-                        href="https://wa.me/<?= e($mainWaNumber) ?>"
+                        href="https://wa.me/91<?= e($mainWaNumber) ?>"
                         target="_blank"
                         rel="noopener noreferrer"
                         style="color:#159957;text-decoration:none;font-weight:700;display:inline-block;margin-right:7px;"
@@ -5572,7 +5572,7 @@ function tdlWaHtml(number) {
     if (!raw) return '';
     var wa = raw.replace(/[^0-9]/g, '');
     if (!wa) return '<span>' + tdlEscapeHtml(raw) + '</span>';
-    return '<a href="https://wa.me/' + encodeURIComponent(wa) + '" target="_blank" rel="noopener noreferrer" style="color:#159957;text-decoration:none;font-weight:700;display:inline-block;margin-right:7px" title="Open WhatsApp">' + tdlEscapeHtml(raw) + '</a>';
+    return '<a href="https://wa.me/91' + encodeURIComponent(wa) + '" target="_blank" rel="noopener noreferrer" style="color:#159957;text-decoration:none;font-weight:700;display:inline-block;margin-right:7px" title="Open WhatsApp">' + tdlEscapeHtml(raw) + '</a>';
 }
 
 function tdlNumbersHtml(person) {
@@ -6457,7 +6457,7 @@ function tdlRenderWhatsAppContact() {
 
     var c = tdlWhatsAppQueue[tdlWhatsAppIndex];
     var message = tdlPrepareWhatsAppMessage(c);
-    tdlCurrentWhatsAppUrl = 'https://wa.me/' + encodeURIComponent(c.number) + (message ? '?text=' + encodeURIComponent(message) : '');
+    tdlCurrentWhatsAppUrl = 'https://wa.me/91' + encodeURIComponent(c.number) + (message ? '?text=' + encodeURIComponent(message) : '');
     tdlWhatsAppOpenedCurrent = false;
 
     card.innerHTML =
